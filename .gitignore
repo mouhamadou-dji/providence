@@ -1,0 +1,20 @@
+# Roblox place / model binaries — too big and merge-hostile for git
+*.rbxl
+*.rbxlx
+*.rbxl.lock
+*.rbxlx.lock
+*.rbxm
+*.rbxmx
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Node (only used by tools/export_receiver.js)
+node_modules/
+
+# Local scratch
+scratch/
+*.log

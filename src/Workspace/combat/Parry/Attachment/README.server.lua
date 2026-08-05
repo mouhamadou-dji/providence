@@ -1,0 +1,3 @@
+-- All the shines Emit(1)
+-- Shockwave Emit(5)
+-- Lines and BigLines Emit(25)
