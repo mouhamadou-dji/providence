@@ -1,0 +1,17 @@
+# The Studio exporter always writes LF. Pin LF in the working tree too, so an export
+# never shows up as "every file changed" just because of line endings, and so both
+# scripters see identical diffs regardless of their git autocrlf setting.
+* text=auto eol=lf
+
+*.lua   text eol=lf
+*.luau  text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.js    text eol=lf
+
+# Roblox binaries, if any ever get committed deliberately
+*.rbxl  binary
+*.rbxlx binary
+*.rbxm  binary
+*.rbxmx binary
+*.png   binary
