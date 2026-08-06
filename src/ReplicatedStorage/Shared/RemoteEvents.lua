@@ -51,6 +51,15 @@ RemoteEvents.RequestSlideEnd     = getOrCreate("RequestSlideEnd")      -- client
 RemoteEvents.OnDodgeResult       = getOrCreate("OnDodgeResult")        -- server -> client: {result="clean"|"fatigued"|"denied", reason, retryAfter, stock}
 RemoteEvents.UpdateMovementState = getOrCreate("UpdateMovementState")  -- server -> client: "Crouch"|"CrouchEnd"|"Sprint"|"SprintEnd"
 
+-- Movement rehaul phase 1 (2026-08-05): the VelocityManager. Server-initiated velocity
+-- (knockback, launches) cannot be written server-side on a client-owned character -- the
+-- next replication tick overwrites it -- so the server pushes a contribution spec and the
+-- owning client's VelocityClient applies it. Server -> client ONLY; this system has no
+-- client->server surface, so there is nothing to validate or rate-limit on the way in.
+-- (A future displacement guard needs no echo either: the server authored the spec, so it
+-- already knows exactly what displacement it should budget for.)
+RemoteEvents.VelocityPush = getOrCreate("VelocityPush") -- server -> owning client: {id?, planar=Vector3, vertical?, duration, maxForce?, decay="none"|"linear", suppressInput?}
+
 -- HUD / UI (server -> specific client)
 RemoteEvents.UpdateHUD          = getOrCreate("UpdateHUD")
 RemoteEvents.UpdateEclipseMoon  = getOrCreate("UpdateEclipseMoon")

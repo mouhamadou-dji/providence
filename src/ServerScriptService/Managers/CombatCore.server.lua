@@ -143,6 +143,16 @@ function CombatCore.setSpeed(player, mult) setSpeed(player, mult) end
 function CombatCore.refreshSpeed(player) local s = getPS(player); setSpeed(player, s and s.speedMult or 1) end
 function CombatCore.applyDamage(hum, dmg, victimPlayer, sourceTag) return applyDamage(hum, dmg, victimPlayer, sourceTag) end
 
+-- Knockback is movement physics, not combat truth -- it lives in VelocityManager (movement
+-- rehaul phase 1, 2026-08-05). Late-bound like every cross-manager call, so load order is
+-- irrelevant. ShroomManager/WolfManager have called cm.applyKnockback through nil-guards
+-- since the teardown and silently no-opped while no implementation existed; this stub is
+-- what makes those calls land again.
+function CombatCore.applyKnockback(...)
+	local vm = _G.VelocityManager
+	if vm and vm.applyKnockback then return vm.applyKnockback(...) end
+end
+
 -- Combat state: still replicated to the character as an Attribute, because client scripts
 -- (MovementController's fidget/tilt gating) read it. Stays "Idle" while combat is absent.
 function CombatCore.getCombatState(player)

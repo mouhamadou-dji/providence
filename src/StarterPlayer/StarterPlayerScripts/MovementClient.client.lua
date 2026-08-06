@@ -19,6 +19,15 @@
 	CLIENT OWNS FEEL, SERVER OWNS TRUTH. Dash motion, animation state and the momentum curve
 	are all local and instant. Stamina, dodge stock, i-frames and the displacement guard are
 	ServerScriptService.Managers.MovementSystem's, and it can deny anything after the fact.
+
+	PHYSICS GOES THROUGH THE VELOCITY STACK (movement rehaul phase 1, 2026-08-05). This
+	script no longer owns LinearVelocity instances: dash and slide are CONTRIBUTIONS pushed
+	through _G.VelocityClient, which sums every force on the character (dash, slide,
+	knockback, whatever else registers) into the one VM_Velocity constraint per character.
+	A knockback landing mid-dash is not a special case anywhere -- it is vector addition,
+	and whichever force is bigger dominates. This script keeps everything else it always
+	owned: input, the state machine, tokens, cooldowns, the momentum model, the server
+	remotes, and the handback maths.
 ]]
 
 local Players           = game:GetService("Players")
@@ -66,15 +75,26 @@ local sprintHeld    = false
 local sprintActive  = false
 local isDashing     = false
 local dashToken     = 0
-local dashVelocity, dashAttachment
 local dashCooldownUntil = 0
 
--- Slide owns the root while active, exactly like dash does. Separate velocity object so the
--- two can never blend into each other -- see the priority chain in the render step.
 local isSliding      = false
-local slideVelocity, slideAttachment
 local slideVec       = Vector3.zero
 local slideCooldownUntil = 0
+
+-- The velocity stack. Dash and slide push their velocity through here as contributions
+-- ("dash" / "slide" ids) instead of owning constraints; VelocityClient owns the single
+-- VM_Velocity per character and sums every force acting on it. Late-bound with a nil-guard
+-- (same as _G.CameraController above) so load order between StarterPlayerScripts never
+-- matters; warn once rather than silently losing every impulse if it is genuinely missing.
+local warnedNoVC = false
+local function vc()
+	local v = _G.VelocityClient
+	if not v and not warnedNoVC then
+		warnedNoVC = true
+		warn("[MovementClient] _G.VelocityClient missing -- dash/slide impulses cannot apply")
+	end
+	return v
+end
 
 -- Shiftlock is CameraClient's (it owns framing, and shiftlock is framing + facing). We only
 -- need to KNOW about it: while the body is locked to the camera we must not set
@@ -212,75 +232,11 @@ local function buildContext(dt, grounded)
 	}
 end
 
--- Point a LinearVelocity at a flat world direction WITHOUT pinning its vertical velocity.
---
--- This is the whole reason both impulse actions use VelocityConstraintMode.Plane rather than
--- Vector. Vector mode constrains all three axes, so a flat VectorVelocity holds Y at exactly
--- zero -- gravity is cancelled for the entire window. That made the dash hover instead of
--- arcing off a ledge, and it made the slide UNUSABLE on the slopes it was designed for: any
--- downhill movement lifts you off the surface, and with no gravity to bring you back the
--- floor check saw Air and ended the slide on the first frame. Plane mode constrains only the
--- X/Z tangent axes and leaves Y completely free.
-local function setPlanarVelocity(lv, v)
-	lv.PlaneVelocity = Vector2.new(v.X, v.Z) -- primary = X axis, secondary = Z axis
-end
-
-local function configurePlanar(lv)
-	lv.RelativeTo             = Enum.ActuatorRelativeTo.World
-	lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Plane
-	lv.PrimaryTangentAxis     = Vector3.xAxis
-	lv.SecondaryTangentAxis   = Vector3.zAxis
-	-- MaxForce (the scalar) is the one that applies in Plane mode; MaxAxesForce is Vector-only.
-	-- Deliberately NOT math.huge. An unbounded force fights wall collisions instead of letting
-	-- physics resolve them, which is the documented cause of the dash-into-wall fling/spin bug.
-	-- A tuned cap lets the solver win the argument.
-	lv.MaxForce = 45000
-	lv.PlaneVelocity = Vector2.zero
-	lv.Enabled = false
-end
-
--- ── Dash ─────────────────────────────────────────────────────────────────
--- Framerate-independent by construction: a timed LinearVelocity, so distance is always
--- speed * Duration regardless of how many frames elapse inside that window. Per-frame
--- nudges are the classic way to get this wrong (240fps players dash further than 60fps).
--- The SPEED now scales with your momentum (dashSpeedFor); the DURATION does not, because
--- that fixed window is exactly what makes the distance frame-count-independent.
-local function ensureDashVelocity()
-	if dashVelocity and dashVelocity.Parent == hrp then return end
-	if not hrp then return end
-	local oldAtt = hrp:FindFirstChild("MV_DashAttachment")
-	if oldAtt then oldAtt:Destroy() end
-	local oldLv = hrp:FindFirstChild("MV_DashVelocity")
-	if oldLv then oldLv:Destroy() end
-
-	dashAttachment = Instance.new("Attachment")
-	dashAttachment.Name = "MV_DashAttachment"
-	dashAttachment.Parent = hrp
-
-	dashVelocity = Instance.new("LinearVelocity")
-	dashVelocity.Name = "MV_DashVelocity"
-	dashVelocity.Attachment0 = dashAttachment
-	configurePlanar(dashVelocity)
-	dashVelocity.Parent = hrp
-end
-
--- ── Slide ────────────────────────────────────────────────────────────────
-local function ensureSlideVelocity()
-	if slideVelocity and slideVelocity.Parent == hrp then return end
-	if not hrp then return end
-	for _, n in ipairs({"MV_SlideAttachment", "MV_SlideVelocity"}) do
-		local old = hrp:FindFirstChild(n); if old then old:Destroy() end
-	end
-	slideAttachment = Instance.new("Attachment")
-	slideAttachment.Name = "MV_SlideAttachment"
-	slideAttachment.Parent = hrp
-
-	slideVelocity = Instance.new("LinearVelocity")
-	slideVelocity.Name = "MV_SlideVelocity"
-	slideVelocity.Attachment0 = slideAttachment
-	configurePlanar(slideVelocity)
-	slideVelocity.Parent = hrp
-end
+-- The constraint knowledge that used to live here (Plane vs Vector mode -- Vector pins Y
+-- and cancels gravity, which made the dash hover and broke slides on slopes -- and the
+-- finite MaxForce that stops the dash-into-wall fling) moved into
+-- ReplicatedStorage.Shared.VelocityRuntime with the instances themselves. Dash and slide
+-- are now just contributions; see the pushes in startDash/startSlide below.
 
 -- Slope under the character: the angle off vertical, and the horizontal downhill heading.
 -- Downhill is world-down projected onto the surface plane -- the direction a ball would roll.
@@ -308,10 +264,8 @@ local function endSlide(preserveMomentum)
 	if not isSliding then return end
 	isSliding = false
 	slideCooldownUntil = tick() + (SLIDECFG.Cooldown or 0.6)
-	if slideVelocity then
-		slideVelocity.Enabled = false
-		slideVelocity.PlaneVelocity = Vector2.zero
-	end
+	local v = vc()
+	if v then v.cancel("slide") end
 	setOwnFacing(false)
 
 	-- HANDBACK, same contract as the dash: seed the movement model from the slide's real
@@ -345,21 +299,22 @@ local function startSlide()
 	local dir = Model.flatUnit(flat) or Model.flatUnit(hrp.CFrame.LookVector)
 	if not dir then return end
 
-	ensureSlideVelocity()
-	if not slideVelocity then return end
+	local v = vc()
+	if not v then return end
 
 	isSliding = true
 	slideAirTime = 0
 	setOwnFacing(true)
-	-- INSTANT entry: velocity is set outright, never ramped into.
+	-- INSTANT entry: velocity is set outright, never ramped into. No duration -- a slide
+	-- ends when its own physics says so (speed floor, slope, ledge), so the contribution
+	-- lives until endSlide cancels it and is re-steered every frame by updateSlide.
 	slideVec = dir * math.min((SLIDECFG.MaxSpeed or 60), speed + (SLIDECFG.EntryImpulse or 18))
-	setPlanarVelocity(slideVelocity, slideVec)
-	slideVelocity.Enabled = true
+	v.push({ id = "slide", planar = slideVec, duration = nil, decay = "none", suppressInput = true })
 	if RE_Slide then RE_Slide:FireServer() end
 end
 
 local function updateSlide(dt)
-	if not slideVelocity or not hrp or not hum then endSlide(false); return end
+	if not vc() or not hrp or not hum then endSlide(false); return end
 
 	if hum.FloorMaterial == Enum.Material.Air then
 		slideAirTime = slideAirTime + dt
@@ -407,13 +362,15 @@ local function updateSlide(dt)
 		if steered then slideVec = steered * slideVec.Magnitude end
 	end
 
-	-- slideVec stays flat by construction; the constraint no longer touches Y at all, so
-	-- gravity keeps the character pinned to the slope it is sliding down.
+	-- slideVec stays flat by construction; the constraint never touches Y, so gravity keeps
+	-- the character pinned to the slope it is sliding down.
 	slideVec = Vector3.new(slideVec.X, 0, slideVec.Z)
 	if slideVec.Magnitude > (SLIDECFG.MaxSpeed or 60) then
 		slideVec = slideVec.Unit * (SLIDECFG.MaxSpeed or 60)
 	end
-	setPlanarVelocity(slideVelocity, slideVec)
+	-- Re-steer the live contribution rather than re-pushing: update keeps the same record,
+	-- so the slide stays ONE contribution being aimed, not a stream of replacements.
+	vc().update("slide", slideVec)
 
 	if slideVec.Magnitude < (SLIDECFG.MinSlideSpeed or 10) then endSlide(true) end
 end
@@ -436,10 +393,10 @@ local dashDir = nil
 local function endDash(myToken, inheritPower)
 	if myToken ~= dashToken then return end -- a newer dash already took over
 	isDashing = false
-	if dashVelocity then
-		dashVelocity.Enabled = false
-		dashVelocity.PlaneVelocity = Vector2.zero
-	end
+	-- cancel is exact and idempotent: on a natural end the contribution expires this same
+	-- instant anyway (same Duration), and on a denial/feint this is what cuts it short.
+	local v = vc()
+	if v then v.cancel("dash") end
 	setOwnFacing(false)
 	if inheritPower then
 		-- HANDBACK. Do NOT dump momentum to zero on exit -- carrying a fraction of the dash's
@@ -477,8 +434,8 @@ local function startDash(token)
 	local dir = dirTokenToVector(token)
 	if not dir then return end
 
-	ensureDashVelocity()
-	if not dashVelocity then return end
+	local v = vc()
+	if not v then return end
 
 	local grounded = hum.FloorMaterial ~= Enum.Material.Air
 	-- MOMENTUM-SCALED. A dash from a standstill is a dodge step (~7 studs); a dash out of a
@@ -498,8 +455,10 @@ local function startDash(token)
 	-- in which case a dodge is a strafe and the body should keep facing where you are looking.
 	setOwnFacing(true)
 	state.currentDir = dir
-	setPlanarVelocity(dashVelocity, dir * speed)
-	dashVelocity.Enabled = true
+	-- Framerate-independent by construction, same as it always was: a TIMED contribution, so
+	-- distance is speed * Duration regardless of how many frames elapse inside the window.
+	-- Fixed id: a dash cannot start while one is running, so "dash" can never collide.
+	v.push({ id = "dash", planar = dir * speed, duration = DASHCFG.Duration or 0.25, decay = "none", suppressInput = true })
 
 	-- Fire AFTER starting locally: the client owns feel, so the dash must not wait a round
 	-- trip. The server validates and can still deny it (see OnDodgeResult below).
@@ -642,13 +601,17 @@ RunService:BindToRenderStep("MovementClientStep", Enum.RenderPriority.Character.
 
 	local grounded = hum.FloorMaterial ~= Enum.Material.Air
 
-	-- ── PRIORITY CHAIN ──────────────────────────────────────────────────────
-	--   1. dash   -- DashVelocity drives, everything else suspended
-	--   2. slide  -- SlideVelocity drives, the momentum model suspended
+	-- ── STATE CHAIN ─────────────────────────────────────────────────────────
+	--   1. dash   -- the "dash" contribution drives, the momentum model suspended
+	--   2. slide  -- the "slide" contribution drives (re-steered by updateSlide)
 	--   3. movement model
-	-- Exactly one of these drives the root at any instant. Both impulse actions zero the
-	-- Humanoid's own contribution while they own it, so nothing ever sums together, and both
-	-- hand momentum back to the model on exit rather than dead-stopping.
+	-- This chain now sequences the MODEL AND ANIMATION STATE only -- the physics no longer
+	-- needs it. All actual velocity goes through VelocityClient's single constraint, where
+	-- dash, slide and anything the server pushes (knockback) vector-sum; both impulse
+	-- contributions carry suppressInput, so VelocityClient zeroes the Humanoid's own Move a
+	-- priority slot after ours (the Move(zero) here is belt-and-braces for a missing
+	-- VelocityClient). Both actions still hand momentum back to the model on exit rather
+	-- than dead-stopping.
 	if isDashing then
 		hum:Move(Vector3.zero, false)
 		publishState(grounded)
@@ -698,10 +661,8 @@ local function acquire(char)
 	isDashing = false
 	dashToken += 1 -- invalidates any in-flight endDash from the previous character
 	dashCooldownUntil = 0
-	dashVelocity, dashAttachment = nil, nil
 	dashLaunchSpeed, dashDir = 0, nil
 	isSliding = false
-	slideVelocity, slideAttachment = nil, nil
 	slideVec = Vector3.zero
 	slideAirTime = 0
 	slideCooldownUntil = 0
@@ -710,13 +671,13 @@ local function acquire(char)
 	lastMoveState = nil
 
 	if hum then hum.AutoRotate = true end
-	ensureDashVelocity()
-	ensureSlideVelocity()
+	-- No constraints to ensure any more -- VelocityClient attaches the character's single
+	-- VM_Velocity in its own acquire, and clears every contribution on death itself.
 
 	hum.Died:Connect(function()
 		dashToken += 1
 		isDashing = false
-		if dashVelocity then dashVelocity.Enabled = false end
+		isSliding = false
 	end)
 end
 

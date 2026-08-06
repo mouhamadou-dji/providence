@@ -325,6 +325,32 @@ Config.Movement = {
 	Rage = { DecelMult = 0.35, TurnMult = 0.45, FreeDodges = true },
 }
 
+-- ─── VELOCITY (movement rehaul phase 1, 2026-08-05) ─────────────────────────
+-- The contribution system: every external force on a character (dash, slide, knockback,
+-- launches) registers a contribution with VelocityModel/VelocityClient, and ONE
+-- LinearVelocity per character applies the vector sum. Read by VelocityModel (as
+-- ctx.config), VelocityRuntime, VelocityClient and VelocityManager.
+Config.Velocity = {
+	-- Same tuned cap the dash/slide constraints proved out, for the same reason: unbounded
+	-- force fights wall collisions instead of letting the solver resolve them (the
+	-- dash-into-wall fling/spin bug). Composes by MAX across stacked contributions, never
+	-- by sum -- stacking three knockbacks must not triple the violence against a wall.
+	MaxForce    = 45000,
+	MaxSpeed    = 200, -- clamp on any single contribution and on the resolved sum (typo guard)
+	MaxDuration = 5,   -- clamp on any single finite contribution's duration
+	DefaultDuration = 0.25, -- substituted when a server push omits duration
+
+	Knockback = {
+		Duration = 0.25,     -- how long a standard hit-shove drives
+		Decay    = "linear", -- fades across the window rather than cutting -- reads as a
+		                     -- shove, not a conveyor belt
+		-- Forces deliberately NOT duplicated here: callers pass their own (Shroom 32/26,
+		-- Wolf 40/20 from their config blocks) and the fallback stays
+		-- Config.Combat.KnockbackForce, read at call time by VelocityManager.applyKnockback
+		-- -- which takes that long-orphaned key off the orphan list instead of shadowing it.
+	},
+}
+
 -- Config.MovementFeel (accel ramp, stop-slide, sprint FOV, lean-into-turns, coyote
 -- time + jump buffering, camera follow lag) was deleted 2026-08-04 along with
 -- StarterPlayerScripts.MovementFeelClient. Its full tuning block is preserved inside

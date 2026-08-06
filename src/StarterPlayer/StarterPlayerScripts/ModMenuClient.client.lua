@@ -2174,6 +2174,22 @@ local function buildCmds()
 			if need() and hi.Text~="" then fire("setShadowBoxHits",getTarget(),hi.Text) end
 		end)
 	end
+
+	-- VELOCITY TEST -- Studio-only feel tests for the VelocityManager (movement rehaul
+	-- phase 1). The `vmtest` command itself is registered at runtime by VM_TestHarness,
+	-- which never runs on a live server -- so the section is hidden there too, and even a
+	-- hand-fired "vmtest" would just come back "Unknown command".
+	if RunService:IsStudio() then
+		sectionHdr(cmdFrame,"VELOCITY TEST (STUDIO)")
+		do local r=cmdRow(cmdFrame,"Push Self",48)
+			action(r,"wind",UDim2.new(0,42,0,20),UDim2.new(0,112,0,3)).MouseButton1Click:Connect(function() fire("vmtest",nil,"wind") end)
+			action(r,"knockback",UDim2.new(0,70,0,20),UDim2.new(0,160,0,3)).MouseButton1Click:Connect(function() fire("vmtest",nil,"kb") end)
+			action(r,"sum",UDim2.new(0,38,0,20),UDim2.new(0,236,0,3)).MouseButton1Click:Connect(function() fire("vmtest",nil,"sum") end)
+			action(r,"launch",UDim2.new(0,50,0,20),UDim2.new(0,280,0,3)).MouseButton1Click:Connect(function() fire("vmtest",nil,"launch") end)
+			action(r,"mob hit",UDim2.new(0,56,0,20),UDim2.new(0,112,0,25)).MouseButton1Click:Connect(function() fire("vmtest",nil,"hit") end)
+			action(r,"npc push",UDim2.new(0,60,0,20),UDim2.new(0,174,0,25)).MouseButton1Click:Connect(function() fire("vmtest",nil,"npc") end)
+		end
+	end
 end
 
 -- Roster

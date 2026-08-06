@@ -1332,6 +1332,12 @@ function ModManager.executeCommand(exec,cmdName,targetName,...)
 	return dispatch(exec,cmdName,target,...)
 end
 function ModManager.directExecute(cmdName,exec,target,...) return dispatch(exec,cmdName,target,...) end
+-- Runtime command injection, for Studio test harnesses (VM_TestHarness registers `vmtest`
+-- this way). A test-only command registered by an IsStudio()-gated script physically does
+-- not exist on a live server -- cleaner than shipping it here behind a guard.
+function ModManager.registerCommand(name,handler)
+	if type(name)=="string" and type(handler)=="function" then commands[name]=handler end
+end
 ModManager.isLoreTeam = isLoreTeam
 function ModManager.getLastLog()  return actionLog[#actionLog] end
 function ModManager.getLogCount() return #actionLog end
