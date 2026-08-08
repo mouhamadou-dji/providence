@@ -10,7 +10,7 @@ local Config  = require(RepStorage.Shared.Config) -- Config.Mobs backs the Spawn
 local player  = Players.LocalPlayer
 local pgui    = player.PlayerGui
 local UIS     = UserInputService
-local mouse   = player:GetMouse() -- backs the V-to-view-hovered-player shortcut (mod only)
+local mouse   = player:GetMouse() 
 
 local IMG_BG    = "rbxassetid://106844519299601"
 local IMG_HDR   = "rbxassetid://94319779202764"

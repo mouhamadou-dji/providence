@@ -6,10 +6,6 @@ local Config     = require(RepStorage:WaitForChild("Shared"):WaitForChild("Confi
 local OWNERS       = require(RepStorage.Shared.Config).Owners
 local MOD_GROUP_ID = 3015509993
 local MOD_RANK_MIN = 200
--- Lore Team is a smaller, higher-trust subset of mods (design doc: "for less notifications
--- make it lore team only") -- same group, just a higher rank threshold, so promoting someone
--- to Lore Team is just a rank change in the existing mod group rather than a whole new one.
--- Owners always qualify, same as isMod.
 local LORE_RANK_MIN = 240
 
 local function getOrCreate(name, isFunc)
@@ -37,7 +33,7 @@ _G._notifRE = notifRE
 local serverLocked     = false
 local frozenPlayers    = {}
 local invisiblePlayers = {}
-local invinciblePlayers= {} -- godmode: real server-side damage immunity, not just the client's cosmetic HP-snap-back
+local invinciblePlayers= {} 
 local loreBoard        = {}
 local RACE_MAP    = {human="Human",vampire="Vampire",dwarf="Dwarf",apostle="Apostle",godhand="GodHand"}
 local RELATION_MAP= {brother="Brother",sister="Sister",twin="Twin",cousin="Cousin",distantrelative="DistantRelative",none="None"}
