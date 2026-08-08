@@ -352,7 +352,12 @@ local function startSlide()
 	-- INSTANT entry: velocity is set outright, never ramped into. No duration -- a slide
 	-- ends when its own physics says so (speed floor, slope, ledge), so the contribution
 	-- lives until endSlide cancels it and is re-steered every frame by updateSlide.
-	slideVec = dir * math.min((SLIDECFG.MaxSpeed or 60), speed + (SLIDECFG.EntryImpulse or 18))
+	-- Entry clamps at MaxEntrySpeed, not MaxSpeed (2026-08-08): the dash-cancel chain was
+	-- entering at the dash's ~73 and riding the 60 physics cap. MaxSpeed stays the downhill
+	-- ceiling -- hills are the point -- a slide just may not START that fast.
+	slideVec = dir * math.min(
+		(SLIDECFG.MaxEntrySpeed or SLIDECFG.MaxSpeed or 60),
+		speed + (SLIDECFG.EntryImpulse or 10))
 	v.push({ id = "slide", planar = slideVec, duration = nil, decay = "none", suppressInput = true })
 	if RE_Slide then RE_Slide:FireServer() end
 end

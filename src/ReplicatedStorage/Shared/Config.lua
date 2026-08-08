@@ -11,6 +11,10 @@ Config.ModGroupId = 0
 Config.ModRankMinimum = 100
 
 Config.Stamina = {
+	-- ⚠ DEV TOGGLE (2026-08-08): true = NOTHING costs stamina (StaminaManager.drain
+	-- succeeds without draining). The dev asked for free stamina while iterating on
+	-- movement; flip to false before anything real ships.
+	FreeStamina = true,
 	Max = 100,
 	RegenIdle    = 1.5,  -- stamina per second out of combat (was 1, bumped a bit faster)
 	RegenCombat  = 0.6,  -- stamina per second in combat (was 0.4, bumped a bit faster)
@@ -252,8 +256,14 @@ Config.Movement = {
 	-- RETUNED 2026-08-05 pt3. EntryImpulse 55 meant a slide STARTED at 71 studs/s from a
 	-- walk and covered ~62 studs on flat ground before friction gave up -- a teleport, not a
 	-- commitment. Now ~15 studs from a walk, ~27 from a sprint.
+	--
+	-- RETUNED 2026-08-08 (dev: "the boost is a bit too strong, especially with a dash"):
+	-- EntryImpulse 18 -> 10, and entry now clamps at MaxEntrySpeed instead of MaxSpeed --
+	-- the dash-cancel chain was entering at the dash's ~73 and riding the full 60 physics
+	-- cap. MaxSpeed stays the DOWNHILL ceiling; a slide just may not START that fast.
 	Slide = {
-		EntryImpulse    = 18,   -- instant burst added to your current speed on entry
+		EntryImpulse    = 10,   -- instant burst added to your current speed on entry
+		MaxEntrySpeed   = 45,   -- entry clamp: sprint enters ~36, a dash-chain at 45, hills may still build to MaxSpeed
 		MinSpeedToSlide = 12,   -- must already be moving this fast to slide at all
 		-- The Ctrl arbitration line: faster than this the press means slide, otherwise it
 		-- means crouch. BaseWalkSpeed + 1 so a plain walk never trips it on speed jitter.

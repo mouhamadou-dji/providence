@@ -161,13 +161,15 @@ local function loadAnims(animator)
 	end
 
 	-- Slide is loaded from its library INSTANCE, not the ANIMS id table -- see the header.
-	-- Looped because a slide has no fixed length: the track holds until the state ends.
+	-- NOT looped: a slide has no fixed length and the replay hitch read as a glitch, so the
+	-- clip plays once and the RenderStepped driver freeze-frames its final pose for however
+	-- long the slide actually lasts.
 	local slideAnim = AnimMovement and AnimMovement:FindFirstChild("Slide")
 	if slideAnim and slideAnim:IsA("Animation") and slideAnim.AnimationId ~= "" then
 		local ok, t = pcall(function() return animator:LoadAnimation(slideAnim) end)
 		if ok and t then
 			t.Priority = Enum.AnimationPriority.Action
-			t.Looped = true
+			t.Looped = false
 			tracks.slide = t
 			ownTrackSet[t] = true
 		end
@@ -336,6 +338,22 @@ end
 -- ─── Drivers ───────────────────────────────────────────────────────────────
 RunService.RenderStepped:Connect(function()
 	playAnim(resolveAnim())
+
+	-- Slide freeze-frame (2026-08-08): hold the clip's final pose for as long as the slide
+	-- lasts. Polled here rather than scheduled on a timer so an early slide exit can never
+	-- leave a stale AdjustSpeed behind (playAnim's Play resets speed to 1 on the next
+	-- slide), and the not-IsPlaying branch covers the frame-drop race where the non-looped
+	-- track manages to finish before the freeze lands.
+	local st = tracks.slide
+	if currentAnim == "slide" and st then
+		if not st.IsPlaying then
+			st:Play(0.05)
+			st.TimePosition = math.max(0, (st.Length or 0) - 0.001)
+			st:AdjustSpeed(0)
+		elseif st.Speed > 0 and st.Length > 0 and st.TimePosition >= st.Length - 0.1 then
+			st:AdjustSpeed(0)
+		end
+	end
 end)
 
 RunService.Heartbeat:Connect(function(dt)

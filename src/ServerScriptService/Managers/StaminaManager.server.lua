@@ -251,6 +251,11 @@ end
 
 function SM.drain(p, amount)
 	local d = data[p.UserId]; if not d then return false end
+	-- DEV TOGGLE (2026-08-08): free stamina while the dev iterates on movement. Every cost
+	-- in the game funnels through this one function (sprint tick, dash, slide, M2, parry,
+	-- block...), so this single gate is the whole feature. Config.Stamina.FreeStamina =
+	-- false restores normal costs.
+	if st.FreeStamina then return true end
 	local hunger = getHunger(p)
 	local cost   = amount * (hunger <= 0 and (st.HungerZeroDrainMult or 1.2) or 1)
 	if d.current < cost then return false end
