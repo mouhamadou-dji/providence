@@ -11,6 +11,14 @@
 	being inferred from WalkSpeed. This script still owns the clips and the Animator; it just
 	no longer guesses what the body is doing.
 
+	UPDATE 2026-08-07: the slide got its presentation back. MoveState "Sliding" plays the
+	Slide clip -- loaded from the ReplicatedStorage._Animations.Movement.Slide INSTANCE, not
+	a pasted id, so re-publishing the animation there needs no code change -- and loops
+	_Sounds.Movement.slide_sound from the character's root while the slide lasts. The slide
+	check sits ABOVE the landing/jump checks on purpose: the slide's air-grace lets it
+	survive bumps that flick the Humanoid through Freefall/landing for a frame or two, and
+	those must not flicker the clip.
+
 	DELETED WITH THE TEARDOWN (archived at ServerStorage._OldMovement_2026_08_04.Client):
 	  mechanics -- Q dash + dash feint + dash cooldown prediction, slide, slide-jump,
 	               block/fist stance states, sprint
@@ -119,6 +127,17 @@ if RE_MovState then
 	end)
 end
 
+-- ─── Slide presentation assets ────────────────────────────────────────────
+-- The clip comes from the Animation INSTANCE in _Animations.Movement (its id lives in the
+-- place, not in this file); the sound from _Sounds.Movement, cloned per character so the
+-- rolloff is 3D and the library instance stays pristine.
+local animsRoot     = ReplicatedStorage:WaitForChild("_Animations", 5)
+local AnimMovement  = animsRoot and animsRoot:WaitForChild("Movement", 5)
+local soundsRoot    = ReplicatedStorage:WaitForChild("_Sounds", 5)
+local SoundMovement = soundsRoot and soundsRoot:WaitForChild("Movement", 5)
+
+local slideSound = nil -- this character's cloned slide_sound, parented to its root
+
 -- ─── Animation tracks ─────────────────────────────────────────────────────
 local tracks      = {}
 local currentAnim = nil
@@ -137,6 +156,19 @@ local function loadAnims(animator)
 			t.Priority = Enum.AnimationPriority.Action
 			if name == "jump_loop" then t.Looped = true end
 			tracks[name] = t
+			ownTrackSet[t] = true
+		end
+	end
+
+	-- Slide is loaded from its library INSTANCE, not the ANIMS id table -- see the header.
+	-- Looped because a slide has no fixed length: the track holds until the state ends.
+	local slideAnim = AnimMovement and AnimMovement:FindFirstChild("Slide")
+	if slideAnim and slideAnim:IsA("Animation") and slideAnim.AnimationId ~= "" then
+		local ok, t = pcall(function() return animator:LoadAnimation(slideAnim) end)
+		if ok and t then
+			t.Priority = Enum.AnimationPriority.Action
+			t.Looped = true
+			tracks.slide = t
 			ownTrackSet[t] = true
 		end
 	end
@@ -173,6 +205,20 @@ local function resolveAnim()
 	if not hum or not hrp then return nil end
 	local state = hum:GetState()
 
+	-- MoveState is published every frame by MovementClient (movement revamp, 2026-08-04).
+	-- Reading it instead of re-deriving from WalkSpeed matters now that momentum lives in
+	-- the move-vector MAGNITUDE rather than in WalkSpeed -- a sprinting player and a walking
+	-- player can share a WalkSpeed for a moment mid-ramp, so the old `WalkSpeed > 20` test
+	-- would flicker between clips. The fallback paths below keep this script standalone if
+	-- MovementClient ever fails to load.
+	local moveState = character and character:GetAttribute("MoveState")
+
+	-- SLIDING OWNS THE RIG, checked before everything else: the slide's air-grace rides out
+	-- bumps that flick the Humanoid through Freefall (and re-trigger landing) for a frame or
+	-- two, and none of that may flicker the clip. No track loaded (unpublished animation) --
+	-- fall through to the normal chain, per the placeholder-skip convention.
+	if moveState == "Sliding" and tracks.slide then return "slide" end
+
 	if isLanding then return "land" end
 
 	if state == Enum.HumanoidStateType.Climbing then
@@ -187,13 +233,6 @@ local function resolveAnim()
 	if isJumping then return "jump" end
 	if state == Enum.HumanoidStateType.Freefall then return "jump_loop" end
 
-	-- MoveState is published every frame by MovementClient (movement revamp, 2026-08-04).
-	-- Reading it instead of re-deriving from WalkSpeed matters now that momentum lives in
-	-- the move-vector MAGNITUDE rather than in WalkSpeed -- a sprinting player and a walking
-	-- player can share a WalkSpeed for a moment mid-ramp, so the old `WalkSpeed > 20` test
-	-- would flicker between clips. The fallback keeps this script standalone if
-	-- MovementClient ever fails to load.
-	local moveState = character and character:GetAttribute("MoveState")
 	local moving = hum.MoveDirection.Magnitude > 0.05
 
 	if moveState == "Dashing" then
@@ -247,7 +286,33 @@ local function acquireCharacter(char)
 		end
 	end)
 
+	-- Slide sound: a fresh clone per character (the old one died with the old rig). Event-
+	-- driven off the same MoveState attribute the clips read, so sound and animation can
+	-- never disagree about whether a slide is happening.
+	if slideSound then slideSound:Destroy(); slideSound = nil end
+	local slideLib = SoundMovement and SoundMovement:FindFirstChild("slide_sound")
+	if slideLib and hrp then
+		slideSound = slideLib:Clone()
+		slideSound.Looped = true -- a slide has no fixed length; Stop() ends it
+		slideSound.Parent = hrp
+	end
+	char:GetAttributeChangedSignal("MoveState"):Connect(function()
+		if not slideSound then return end
+		local sliding = char:GetAttribute("MoveState") == "Sliding"
+		if sliding and not slideSound.IsPlaying then
+			slideSound:Play()
+		elseif not sliding and slideSound.IsPlaying then
+			slideSound:Stop()
+		end
+	end)
+
 	if hum then
+		-- Dying mid-slide freezes the MoveState attribute at "Sliding" (MovementClient's
+		-- frame loop stops publishing at 0 HP), so the attribute watcher above would never
+		-- see the exit -- stop the loop here or it plays over the corpse.
+		hum.Died:Connect(function()
+			if slideSound then slideSound:Stop() end
+		end)
 		hum.StateChanged:Connect(function(_, new)
 			if new ~= Enum.HumanoidStateType.Jumping then return end
 			-- A fresh jump means we're airborne on purpose -- clear any lingering "land"
@@ -308,4 +373,4 @@ end)
 if player.Character then acquireCharacter(player.Character) end
 player.CharacterAdded:Connect(acquireCharacter)
 
-print("[MovementController] Movement stack removed 2026-08-04 -- animations + crouch only, no camera layer.")
+print("[MovementController] Loaded -- locomotion clips + crouch mirror + slide anim/sound (2026-08-07), no camera layer.")
