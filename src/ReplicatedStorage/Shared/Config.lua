@@ -3,7 +3,7 @@ local Config = {}
 -- Single source of truth for owner usernames. ModManager / ChatManager / LanguageManager
 -- all read this; do not re-declare a local OWNERS list in a manager (they drifted before,
 -- and this table carried a "greatmlgpd1" typo for the real "greatmlgd1" while nothing read it).
-Config.Owners = {"greatmlgd1", "Broke3n", "RespiraDev", "Gdjkshgdhhse", "JakxSkellington"}
+Config.Owners = {"greatmlgd1", "Broke3n", "RespiraDev", "Gdjkshgdhhse", "JakxSkellington", "Flezkiller"}
 
 -- PLACEHOLDER_GROUPID: ModGroupId
 Config.ModGroupId = 0
