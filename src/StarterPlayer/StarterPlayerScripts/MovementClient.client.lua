@@ -28,6 +28,15 @@
 	and whichever force is bigger dominates. This script keeps everything else it always
 	owned: input, the state machine, tokens, cooldowns, the momentum model, the server
 	remotes, and the handback maths.
+
+	KEYBINDS (2026-08-07 rebind, restoring the pre-teardown scheme): sprint is DOUBLE-TAP W,
+	held. Ctrl is one context-sensitive key: moving faster than
+	Config.Movement.Slide.SlideOverCrouchSpeed it slides, otherwise it crouches, and a slide
+	that decays to a stop with Ctrl still down settles into the crouch. Shift and C are
+	unbound. Crouch moved here from InputHandler so one script can arbitrate the press; its
+	round-trip prediction came along, but expressed through the move-vector magnitude (THE
+	ONE RULE above -- never WalkSpeed), so a wounded or raging character predicts against
+	their real ceiling instead of the old hardcoded 16.
 ]]
 
 local Players           = game:GetService("Players")
@@ -53,6 +62,7 @@ local RAGECFG  = MCFG.Rage or {}
 local remotes       = ReplicatedStorage:WaitForChild("RemoteEvents", 10)
 local RE_Sprint     = remotes:WaitForChild("RequestSprint", 10)
 local RE_SprintEnd  = remotes:WaitForChild("RequestSprintEnd", 10)
+local RE_Crouch     = remotes:WaitForChild("RequestCrouch", 10)
 local RE_Dash       = remotes:WaitForChild("RequestDash", 10)
 local RE_Slide      = remotes:WaitForChild("RequestSlide", 10)
 local RE_SlideEnd   = remotes:WaitForChild("RequestSlideEnd", 10)
@@ -80,6 +90,10 @@ local dashCooldownUntil = 0
 local isSliding      = false
 local slideVec       = Vector3.zero
 local slideCooldownUntil = 0
+
+local ctrlHeld      = false
+local ctrlCrouching = false -- an on-toggle we fired is outstanding; pairs every press with a release fire
+local crouchPredict = false -- optimistic half-speed between our RequestCrouch and the server's Crouch confirm
 
 -- The velocity stack. Dash and slide push their velocity through here as contributions
 -- ("dash" / "slide" ids) instead of owning constraints; VelocityClient owns the single
@@ -254,6 +268,36 @@ local function readSlope()
 	return angle, downhill
 end
 
+-- ── Crouch (moved here from InputHandler, 2026-08-07) ────────────────────────
+-- Optimistic, like the dash: fire, predict, and let the server's Crouch/CrouchEnd mirror
+-- settle it. The toggle fires stay PAIRED (every on-press fire gets a release fire) so the
+-- server's toggle parity can never wedge, exactly the contract InputHandler kept.
+-- Sits above the slide block because updateSlide chains into requestCrouchOn when a slide
+-- decays out under a held Ctrl.
+local function requestCrouchOn()
+	if ctrlCrouching or isCrouching then return end
+	ctrlCrouching = true
+	crouchPredict = true
+	if RE_Crouch then RE_Crouch:FireServer() end
+	-- The grounded-state nudge InputHandler always did: this client owns its own physics,
+	-- so kicking the Humanoid out of a planted state has to happen here to read as instant.
+	if hum and hum.FloorMaterial ~= Enum.Material.Air then
+		hum:ChangeState(Enum.HumanoidStateType.Running)
+	end
+	-- A rejected crouch never echoes "Crouch" back; drop the prediction rather than
+	-- walking at half speed forever.
+	task.delay(0.6, function()
+		if not isCrouching then crouchPredict = false end
+	end)
+end
+
+local function requestCrouchOff()
+	if not ctrlCrouching then return end
+	ctrlCrouching = false
+	crouchPredict = false
+	if RE_Crouch then RE_Crouch:FireServer() end
+end
+
 -- Grace on the floor check. Now that gravity applies during a slide (Plane, not Vector) the
 -- character genuinely leaves the ground for a frame or two over every bump and crest -- ending
 -- on the FIRST Air frame would make a slide down real terrain stutter out almost immediately.
@@ -372,7 +416,14 @@ local function updateSlide(dt)
 	-- so the slide stays ONE contribution being aimed, not a stream of replacements.
 	vc().update("slide", slideVec)
 
-	if slideVec.Magnitude < (SLIDECFG.MinSlideSpeed or 10) then endSlide(true) end
+	if slideVec.Magnitude < (SLIDECFG.MinSlideSpeed or 10) then
+		endSlide(true)
+		-- Slid to a stop with Ctrl still down: settle into the crouch. This is the half of
+		-- the one-key contract where the slide BECOMES the crouch; the ledge and steep-slope
+		-- exits above deliberately don't -- both leave the ground, and crouching there would
+		-- read as a snag. (Chained after endSlide so the handback maths stays untouched.)
+		if ctrlHeld then requestCrouchOn() end
+	end
 end
 
 local function dirTokenToVector(token)
@@ -491,7 +542,7 @@ end
 -- ── Server-mirrored state ──────────────────────────────────────────────────
 if RE_MovState then
 	RE_MovState.OnClientEvent:Connect(function(msgState)
-		if     msgState == "Crouch"     then isCrouching = true
+		if     msgState == "Crouch"     then isCrouching = true; crouchPredict = false -- confirmed; the real ceiling takes over
 		elseif msgState == "CrouchEnd"  then isCrouching = false
 		elseif msgState == "Sprint"     then sprintActive = true
 		elseif msgState == "SprintEnd"  then sprintActive = false
@@ -513,6 +564,29 @@ if RE_Rage then
 	end)
 end
 
+-- The Ctrl arbitration: one key, read against real speed. Above SlideOverCrouchSpeed the
+-- press means slide; at or below it -- or when the slide declines (cooldown, airborne,
+-- mid-dash, no VelocityClient) -- it means crouch, so the press is never simply eaten.
+local function onCtrlDown()
+	ctrlHeld = true
+	if isSliding then return end
+	local threshold = SLIDECFG.SlideOverCrouchSpeed or ((MCFG.BaseWalkSpeed or 16) + 1)
+	if flatSpeed() > threshold then
+		startSlide()
+		if isSliding then return end
+	end
+	requestCrouchOn()
+end
+
+local function onCtrlUp()
+	ctrlHeld = false
+	if isSliding then
+		endSlide(true) -- stand out of the slide, momentum handed back into the run
+		return
+	end
+	requestCrouchOff()
+end
+
 -- ── Input ────────────────────────────────────────────────────────────────
 local function dashTokenFromHeldKeys()
 	local w = UIS:IsKeyDown(Enum.KeyCode.W)
@@ -525,22 +599,35 @@ local function dashTokenFromHeldKeys()
 	return "forward"
 end
 
+-- DOUBLE-TAP W SPRINT. Two W presses inside the window ARM it (sprintHeld); holding W
+-- keeps it armed, and the frame loop below still owns whether sprint actually engages
+-- (forward-dot, crouch, grounded) and the server whether it is granted. Releasing W and
+-- re-pressing inside the window re-arms without a fresh double-tap -- deliberate, so
+-- sprint survives quick steering releases.
+local lastWDown = 0
+
 UIS.InputBegan:Connect(function(input, gpe)
 	if gpe then return end
 	if input.KeyCode == Enum.KeyCode.Q then
 		startDash(dashTokenFromHeldKeys())
-	elseif input.KeyCode == Enum.KeyCode.C then
-		startSlide()
-	elseif input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
-		sprintHeld = true
+	elseif input.KeyCode == Enum.KeyCode.W then
+		local now = tick()
+		if now - lastWDown <= (MCFG.Sprint.DoubleTapWindow or 0.3) then
+			sprintHeld = true
+		end
+		lastWDown = now
+	elseif input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+		onCtrlDown()
 	end
 end)
 
 UIS.InputEnded:Connect(function(input)
-	if input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+	if input.KeyCode == Enum.KeyCode.W then
 		sprintHeld = false
 		if sprintActive and RE_SprintEnd then RE_SprintEnd:FireServer() end
 		sprintActive = false
+	elseif input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+		onCtrlUp()
 	end
 end)
 
@@ -646,7 +733,15 @@ RunService:BindToRenderStep("MovementClientStep", Enum.RenderPriority.Character.
 		if RE_SprintEnd then RE_SprintEnd:FireServer() end
 	end
 
-	hum:Move(Model.moveVector(state), false)
+	local mv = Model.moveVector(state)
+	-- Crouch round-trip prediction: until the server's Crouch confirm halves the WalkSpeed
+	-- ceiling for real, scale the move MAGNITUDE by the same multiplier. Predicting through
+	-- the vector instead of WalkSpeed (THE ONE RULE) keeps it composing -- a wounded or
+	-- raging character predicts against their real ceiling, not a hardcoded 16.
+	if crouchPredict and not isCrouching then
+		mv = mv * ((MCFG.SpeedMult and MCFG.SpeedMult.Crouch) or 0.5)
+	end
+	hum:Move(mv, false)
 	publishState(grounded)
 end)
 
@@ -666,6 +761,7 @@ local function acquire(char)
 	slideVec = Vector3.zero
 	slideAirTime = 0
 	slideCooldownUntil = 0
+	ctrlHeld, ctrlCrouching, crouchPredict = false, false, false
 	isRaging = false
 	sanityTiers = {}
 	lastMoveState = nil
@@ -685,6 +781,6 @@ if player.Character then acquire(player.Character) end
 player.CharacterAdded:Connect(acquire)
 
 print(string.format(
-	"[MovementClient] Loaded -- Shift sprint / Q dash (%.1f-%.1f studs) / C slide, WalkSpeed untouched",
+	"[MovementClient] Loaded -- WxW sprint / Q dash (%.1f-%.1f studs) / Ctrl slide-or-crouch, WalkSpeed untouched",
 	(DASHCFG.MinSpeed or 32) * (DASHCFG.Duration or 0.22),
 	(DASHCFG.MaxSpeed or 73) * (DASHCFG.Duration or 0.22)))

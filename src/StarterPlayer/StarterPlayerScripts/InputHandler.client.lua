@@ -19,12 +19,20 @@
 -- ReplicatedStorage, so re() on any of them would just stall 5s and return nil.
 -- Space is now plain Roblox jump -- nothing client-side needs to fire for it.
 --
--- 2026-08-04 MOVEMENT REVAMP: Shift (sprint) and Q (dash/dodge) came back, but they are
+-- 2026-08-04 MOVEMENT REVAMP: sprint and Q (dash/dodge) came back, but they are
 -- bound in StarterPlayerScripts.MovementClient, NOT here -- that script already owns the
 -- per-frame movement state those inputs depend on (walkPower, grounded, facing), so
 -- splitting the binding across two scripts would just mean shuttling state between them.
 --
--- What remains here: Ctrl crouch, P outfit, Tab journal.
+-- 2026-08-07 KEYBIND REBIND: Ctrl crouch moved to MovementClient too, and for the same
+-- reason -- Ctrl is now one context-sensitive key (faster than
+-- Config.Movement.Slide.SlideOverCrouchSpeed = slide, otherwise crouch), and only that
+-- script knows the speed, the slide state machine, and the chain from a decayed slide
+-- into the crouch. The round-trip crouch prediction went with it (expressed through the
+-- move vector there, not the WalkSpeed write it used here). Sprint became double-tap W;
+-- Shift and C are unbound.
+--
+-- What remains here: P outfit, Tab journal.
 
 local UIS        = game:GetService("UserInputService")
 local RepStorage = game:GetService("ReplicatedStorage")
@@ -43,42 +51,11 @@ local function re(name)
     return RemoteEvents:WaitForChild(name, 5)
 end
 
-local RE_Crouch      = re("RequestCrouch")
 local RE_SendChatMsg = re("SendChatMessage")
-
--- Ctrl crouch state
-local crouchingLocal = false  -- entered crouch via Ctrl
-
--- Server is authoritative for crouch; mirror it so a rejected toggle re-syncs here.
-local RE_MovState = re("UpdateMovementState")
-if RE_MovState then
-    RE_MovState.OnClientEvent:Connect(function(state)
-        if state == "Crouch"        then crouchingLocal = true
-        elseif state == "CrouchEnd" then crouchingLocal = false
-        end
-    end)
-end
 
 local function fire(remoteEvent, ...)
     if remoteEvent then remoteEvent:FireServer(...) end
 end
-
--- Client-side crouch prediction: crouch otherwise waits a full round-trip (fire -> server
--- validates -> setSpeed replicates WalkSpeed back down) before the character actually
--- changes speed, which reads as input lag. Predicting locally the instant Ctrl is pressed
--- makes it feel instant; the server's authoritative setSpeed still arrives shortly after
--- and corrects this guess, so a rejected crouch just snaps back.
-local PREDICT_BASE   = 16
-local PREDICT_CROUCH = 8
-
-local function getHumanoid()
-    local char = localPlayer.Character
-    return char and char:FindFirstChildOfClass("Humanoid")
-end
-
-localPlayer.CharacterAdded:Connect(function()
-    crouchingLocal = false
-end)
 
 -- Input began
 UIS.InputBegan:Connect(function(input, gpe)
@@ -89,23 +66,6 @@ UIS.InputBegan:Connect(function(input, gpe)
     -- P -- swap active outfit slot
     if key == Enum.KeyCode.P then
         fire(RE_SendChatMsg, "/outfit")
-        return
-    end
-
-    -- LeftControl / RightControl -- crouch
-    if key == Enum.KeyCode.LeftControl or key == Enum.KeyCode.RightControl then
-        local hum = getHumanoid()
-        crouchingLocal = true
-        fire(RE_Crouch) -- server toggles crouch on
-        if hum then
-            hum.WalkSpeed = PREDICT_CROUCH
-            -- The character's own client (not the server) owns its physics/state, so the
-            -- grounded-state nudge has to actually run here. Only pulse while grounded so
-            -- it doesn't fight an airborne state.
-            if hum.FloorMaterial ~= Enum.Material.Air then
-                hum:ChangeState(Enum.HumanoidStateType.Running)
-            end
-        end
         return
     end
 
@@ -123,23 +83,7 @@ UIS.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- Input ended
-UIS.InputEnded:Connect(function(input, _gpe)
-    local key = input.KeyCode
-
-    -- Ctrl released -- stand from crouch
-    if key == Enum.KeyCode.LeftControl or key == Enum.KeyCode.RightControl then
-        if crouchingLocal then
-            crouchingLocal = false
-            fire(RE_Crouch) -- server toggles crouch off
-            local hum = getHumanoid()
-            if hum then hum.WalkSpeed = PREDICT_BASE end
-        end
-        return
-    end
-end)
-
 -- Chat commands (/a /t /w /s) are handled server-side by ChatManager
 -- via Players.PlayerAdded -> player.Chatted -- no client-side fire needed here
 
-print("[InputHandler] Loaded -- Ctrl/P/Tab wired (combat bindings removed 2026-08-02, movement bindings 2026-08-04)")
+print("[InputHandler] Loaded -- P/Tab wired (combat bindings removed 2026-08-02, movement 2026-08-04, Ctrl crouch moved to MovementClient 2026-08-07)")

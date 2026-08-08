@@ -208,6 +208,9 @@ Config.Movement = {
 	Sprint = {
 		MinForwardDot = 0.3,  -- must be roughly heading the way you're facing to sprint
 		StaminaPerSec = 3,    -- scaled by TalentManager.getModifier(p, "SprintStaminaDrain")
+		-- Sprint is DOUBLE-TAP W, held (2026-08-07 rebind, restoring the pre-teardown
+		-- scheme -- Shift is unbound). Two W presses inside this window arm it.
+		DoubleTapWindow = 0.30,
 	},
 
 	-- DASH -- distance SCALES WITH MOMENTUM (2026-08-05 pt3). It used to be a flat
@@ -240,7 +243,8 @@ Config.Movement = {
 	},
 
 	-- SLIDE (rebuilt 2026-08-05). Instant in, decay out -- like everything else here,
-	-- nothing ramps at the START. Bound to C.
+	-- nothing ramps at the START. Bound to Ctrl since the 2026-08-07 rebind: above
+	-- SlideOverCrouchSpeed the press slides, at or below it crouches (C is unbound).
 	--
 	-- The whole point is the slope: downhill, gravity feeds the slide and you go FURTHER,
 	-- which is the fun of it. On the flat, friction eats it and you stand back up.
@@ -251,6 +255,9 @@ Config.Movement = {
 	Slide = {
 		EntryImpulse    = 18,   -- instant burst added to your current speed on entry
 		MinSpeedToSlide = 12,   -- must already be moving this fast to slide at all
+		-- The Ctrl arbitration line: faster than this the press means slide, otherwise it
+		-- means crouch. BaseWalkSpeed + 1 so a plain walk never trips it on speed jitter.
+		SlideOverCrouchSpeed = 17,
 		FlatFriction    = 34,   -- studs/s^2 bled on flat ground
 		MinSlideSpeed   = 10,   -- below this you stand up
 		-- Downhill acceleration, scaled by sin(slope). It COMPETES with FlatFriction rather than
