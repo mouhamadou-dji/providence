@@ -426,15 +426,25 @@ local function updateSlide(dt)
 	end
 end
 
-local function dirTokenToVector(token)
-	if not hrp then return nil end
-	local cf = hrp.CFrame
-	local v
-	if     token == "back"  then v = -cf.LookVector
-	elseif token == "left"  then v = -cf.RightVector
-	elseif token == "right" then v =  cf.RightVector
-	else                         v =  cf.LookVector end
-	return Model.flatUnit(v)
+-- Dash direction (2026-08-07): the direction you are STEERING -- the camera-relative
+-- input vector -- not a WASD snap to the four body axes. W+A dashes diagonally
+-- forward-left; no input dashes the way you face (a standing dodge). The server and the
+-- dodge-anim payload still speak 4-way tokens (VALID_DIRS), so the token is DERIVED from
+-- the chosen direction against the facing, same sign convention as moveAngleDeg below.
+local function dashDirAndToken()
+	local facing = hrp and Model.flatUnit(hrp.CFrame.LookVector) or nil
+	local dir = readInputDir() or facing
+	if not dir then return nil, "forward" end
+	local token = "forward"
+	if facing then
+		local deg = Model.angleBetweenDeg(facing, dir)
+		if deg >= 135 then
+			token = "back"
+		elseif deg > 45 then
+			token = (facing:Cross(dir).Y >= 0) and "left" or "right"
+		end
+	end
+	return dir, token
 end
 
 -- Speed this dash was actually launched at, so the handback can be expressed against it.
@@ -473,16 +483,17 @@ local function endDash(myToken, inheritPower)
 	dashDir = nil
 end
 
-local function startDash(token)
+local function startDash()
 	if not hum or not hrp or isDashing then return end
 	if isCrouching then return end
 	if tick() < dashCooldownUntil then return end -- predicted; server re-checks authoritatively
 	-- DASH CANCELS SLIDE. Dash sits above slide in the priority chain, and cancelling into
 	-- one is a deliberate bit of tech. Momentum is preserved through the handback, so the
-	-- dash launches from the slide's speed rather than from a standstill.
+	-- dash launches from the slide's speed rather than from a standstill. (The mirror --
+	-- slide cancels dash -- lives in onCtrlDown.)
 	if isSliding then endSlide(true) end
 
-	local dir = dirTokenToVector(token)
+	local dir, token = dashDirAndToken()
 	if not dir then return end
 
 	local v = vc()
@@ -572,6 +583,11 @@ local function onCtrlDown()
 	if isSliding then return end
 	local threshold = SLIDECFG.SlideOverCrouchSpeed or ((MCFG.BaseWalkSpeed or 16) + 1)
 	if flatSpeed() > threshold then
+		-- SLIDE CANCELS DASH, the mirror of startDash's slide cancel: Ctrl mid-dash cuts
+		-- the dash short WITH its momentum handed back (the assembly keeps the dash's
+		-- velocity when the contribution drops), so startSlide converts that speed instead
+		-- of silently refusing on its isDashing guard and dumping you into a crouch.
+		if isDashing then endDash(dashToken, true) end
 		startSlide()
 		if isSliding then return end
 	end
@@ -588,17 +604,6 @@ local function onCtrlUp()
 end
 
 -- ── Input ────────────────────────────────────────────────────────────────
-local function dashTokenFromHeldKeys()
-	local w = UIS:IsKeyDown(Enum.KeyCode.W)
-	local s = UIS:IsKeyDown(Enum.KeyCode.S)
-	local a = UIS:IsKeyDown(Enum.KeyCode.A)
-	local d = UIS:IsKeyDown(Enum.KeyCode.D)
-	if a and not d then return "left" end
-	if d and not a then return "right" end
-	if s and not w then return "back" end
-	return "forward"
-end
-
 -- DOUBLE-TAP W SPRINT. Two W presses inside the window ARM it (sprintHeld); holding W
 -- keeps it armed, and the frame loop below still owns whether sprint actually engages
 -- (forward-dot, crouch, grounded) and the server whether it is granted. Releasing W and
@@ -609,7 +614,7 @@ local lastWDown = 0
 UIS.InputBegan:Connect(function(input, gpe)
 	if gpe then return end
 	if input.KeyCode == Enum.KeyCode.Q then
-		startDash(dashTokenFromHeldKeys())
+		startDash()
 	elseif input.KeyCode == Enum.KeyCode.W then
 		local now = tick()
 		if now - lastWDown <= (MCFG.Sprint.DoubleTapWindow or 0.3) then
