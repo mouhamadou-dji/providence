@@ -269,6 +269,26 @@ Config.Movement = {
 		-- means crouch. BaseWalkSpeed + 1 so a plain walk never trips it on speed jitter.
 		SlideOverCrouchSpeed = 17,
 		FlatFriction    = 34,   -- studs/s^2 bled on flat ground
+		-- SPEED-CURVED FRICTION (2026-08-08): deceleration scales with how far above the
+		-- reference you are, so a dash-stuffed slide sheds its excess hard and converges
+		-- toward a sprint slide's distance instead of squaring away from it:
+		--   decel = FlatFriction + max(0, speed - ExcessRefSpeed) * ExcessDrag
+		-- ExcessRefSpeed is a sprint slide's entry (SprintSpeed 26 + EntryImpulse 10), so a
+		-- sprint slide rides the plain curve untouched. The excess term does NOT apply while
+		-- meaningfully downhill-aligned (see DownhillNoDragDot) -- hills may still build to
+		-- MaxSpeed, that mechanic is the point.
+		ExcessRefSpeed  = 36,
+		ExcessDrag      = 3.0,  -- the curve knob: per second, per stud/s above the reference
+		DownhillNoDragDot = 0.5, -- downhill alignment at/above this exempts the excess drag
+		-- SLOPE SLIDING (2026-08-08, deepwoken-style): at/above SlideSlopeAngle, Ctrl means
+		-- slide regardless of speed -- from a standstill you're seeded downhill at
+		-- SlopeEntrySpeed (no EntryImpulse; the hill provides) and the slope-accel branch
+		-- takes over. KEEP SlideSlopeAngle >= asin(FlatFriction/SlopeAccelFactor) (~34.5
+		-- with today's 34/60), the crossover where downhill pull beats friction -- below it
+		-- a from-standstill slide just grinds to a halt. MaxSlopeAngle still wins: steeper
+		-- than that is a fall, not a slide.
+		SlideSlopeAngle = 35,
+		SlopeEntrySpeed = 14,
 		MinSlideSpeed   = 10,   -- below this you stand up
 		-- Downhill acceleration, scaled by sin(slope). It COMPETES with FlatFriction rather than
 		-- replacing it, so the crossover is where SlopeAccelFactor * sin(angle) = FlatFriction:

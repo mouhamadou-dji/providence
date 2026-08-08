@@ -94,6 +94,7 @@ local slideCooldownUntil = 0
 local ctrlHeld      = false
 local ctrlCrouching = false -- an on-toggle we fired is outstanding; pairs every press with a release fire
 local crouchPredict = false -- optimistic half-speed between our RequestCrouch and the server's Crouch confirm
+local wantSlopeSlide = false -- crouch->slope-slide conversion pending the server's CrouchEnd echo
 
 -- The velocity stack. Dash and slide push their velocity through here as contributions
 -- ("dash" / "slide" ids) instead of owning constraints; VelocityClient owns the single
@@ -337,10 +338,27 @@ local function startSlide()
 	local vel = hrp.AssemblyLinearVelocity
 	local flat = Vector3.new(vel.X, 0, vel.Z)
 	local speed = flat.Magnitude
-	-- You have to already be moving to slide -- it converts momentum, it does not create it.
-	if speed < (SLIDECFG.MinSpeedToSlide or 12) then return end
 
-	local dir = Model.flatUnit(flat) or Model.flatUnit(hrp.CFrame.LookVector)
+	-- SLOPE ENTRY (2026-08-08, deepwoken-style): a slide-worthy incline under you counts as
+	-- momentum -- Ctrl slides you down it even from a standstill. Seeded straight downhill
+	-- at SlopeEntrySpeed with NO EntryImpulse (the hill provides; updateSlide's slope-accel
+	-- branch takes it from there). MaxSlopeAngle still means fall, not slide.
+	local slopeAngle, slopeDownhill = readSlope()
+	local slowSlopeEntry = slopeDownhill ~= nil
+		and slopeAngle >= (SLIDECFG.SlideSlopeAngle or 35)
+		and slopeAngle <  (SLIDECFG.MaxSlopeAngle or 60)
+		and speed < (SLIDECFG.MinSpeedToSlide or 12)
+
+	-- You have to already be moving to slide -- it converts momentum, it does not create it.
+	-- (A qualifying slope IS stored momentum -- see above.)
+	if not slowSlopeEntry and speed < (SLIDECFG.MinSpeedToSlide or 12) then return end
+
+	local dir
+	if slowSlopeEntry then
+		dir = slopeDownhill
+	else
+		dir = Model.flatUnit(flat) or Model.flatUnit(hrp.CFrame.LookVector)
+	end
 	if not dir then return end
 
 	local v = vc()
@@ -355,9 +373,13 @@ local function startSlide()
 	-- Entry clamps at MaxEntrySpeed, not MaxSpeed (2026-08-08): the dash-cancel chain was
 	-- entering at the dash's ~73 and riding the 60 physics cap. MaxSpeed stays the downhill
 	-- ceiling -- hills are the point -- a slide just may not START that fast.
-	slideVec = dir * math.min(
-		(SLIDECFG.MaxEntrySpeed or SLIDECFG.MaxSpeed or 60),
-		speed + (SLIDECFG.EntryImpulse or 10))
+	if slowSlopeEntry then
+		slideVec = dir * math.max(speed, SLIDECFG.SlopeEntrySpeed or 14)
+	else
+		slideVec = dir * math.min(
+			(SLIDECFG.MaxEntrySpeed or SLIDECFG.MaxSpeed or 60),
+			speed + (SLIDECFG.EntryImpulse or 10))
+	end
 	v.push({ id = "slide", planar = slideVec, duration = nil, decay = "none", suppressInput = true })
 	if RE_Slide then RE_Slide:FireServer() end
 end
@@ -384,9 +406,10 @@ local function updateSlide(dt)
 		-- DOWNHILL FEEDS THE SLIDE. sin(angle) means the steeper it is the harder it pulls,
 		-- so a real hill carries you a long way -- that is the whole appeal of the mechanic.
 		-- Only the component heading downhill accelerates; sliding UP a slope still decays.
+		local downhillAligned = 0
 		if angle > (SLIDECFG.MinSlopeToSlide or 8) and downhill then
-			local alignedDownhill = math.max(0, (Model.flatUnit(slideVec) or downhill):Dot(downhill))
-			local accel = (SLIDECFG.SlopeAccelFactor or 60) * math.sin(math.rad(angle)) * alignedDownhill * dt
+			downhillAligned = math.max(0, (Model.flatUnit(slideVec) or downhill):Dot(downhill))
+			local accel = (SLIDECFG.SlopeAccelFactor or 60) * math.sin(math.rad(angle)) * downhillAligned * dt
 			slideVec = slideVec + downhill * accel
 		end
 
@@ -397,8 +420,19 @@ local function updateSlide(dt)
 		-- frame so it never got the chance to show.) Letting the two compete is both physically
 		-- right and legible: below roughly 35 degrees friction wins and the hill merely EXTENDS
 		-- the slide, above it gravity wins and the hill genuinely accelerates you.
+		--
+		-- EXCESS DRAG (2026-08-08): speed above ExcessRefSpeed bleeds extra, so a dash-fed
+		-- slide converges toward a sprint slide's distance instead of squaring away from it
+		-- (distance grows with speed^2 under constant friction). Exempt while meaningfully
+		-- downhill-aligned -- hills are allowed to build to MaxSpeed; a dash-stuffed FLAT
+		-- slide is not. See the Config.Movement.Slide comment block for the curve.
 		local dir = Model.flatUnit(slideVec)
-		local speed = math.max(0, slideVec.Magnitude - (SLIDECFG.FlatFriction or 34) * dt)
+		local speed = slideVec.Magnitude
+		local decel = SLIDECFG.FlatFriction or 34
+		if downhillAligned < (SLIDECFG.DownhillNoDragDot or 0.5) then
+			decel += math.max(0, speed - (SLIDECFG.ExcessRefSpeed or 36)) * (SLIDECFG.ExcessDrag or 3)
+		end
+		speed = math.max(0, speed - decel * dt)
 		slideVec = dir and dir * speed or Vector3.zero
 	end
 
@@ -559,7 +593,15 @@ end
 if RE_MovState then
 	RE_MovState.OnClientEvent:Connect(function(msgState)
 		if     msgState == "Crouch"     then isCrouching = true; crouchPredict = false -- confirmed; the real ceiling takes over
-		elseif msgState == "CrouchEnd"  then isCrouching = false
+		elseif msgState == "CrouchEnd"  then
+			isCrouching = false
+			-- The crouch->slope-slide conversion completes HERE (armed by the frame loop):
+			-- the slide had to wait out this echo, because both the client guard and the
+			-- server's processSlide refuse slides while crouched.
+			if wantSlopeSlide then
+				wantSlopeSlide = false
+				if ctrlHeld and not isSliding then startSlide() end
+			end
 		elseif msgState == "Sprint"     then sprintActive = true
 		elseif msgState == "SprintEnd"  then sprintActive = false
 		end
@@ -587,7 +629,12 @@ local function onCtrlDown()
 	ctrlHeld = true
 	if isSliding then return end
 	local threshold = SLIDECFG.SlideOverCrouchSpeed or ((MCFG.BaseWalkSpeed or 16) + 1)
-	if flatSpeed() > threshold then
+	-- A slide-worthy incline counts as speed (2026-08-08): Ctrl on it means slide even from
+	-- a standstill -- startSlide seeds the entry downhill.
+	local slopeAngle = readSlope()
+	local onSlideSlope = slopeAngle >= (SLIDECFG.SlideSlopeAngle or 35)
+		and slopeAngle < (SLIDECFG.MaxSlopeAngle or 60)
+	if flatSpeed() > threshold or onSlideSlope then
 		-- SLIDE CANCELS DASH, the mirror of startDash's slide cancel: Ctrl mid-dash cuts
 		-- the dash short WITH its momentum handed back (the assembly keeps the dash's
 		-- velocity when the contribution drops), so startSlide converts that speed instead
@@ -601,6 +648,7 @@ end
 
 local function onCtrlUp()
 	ctrlHeld = false
+	wantSlopeSlide = false -- releasing Ctrl abandons any pending crouch->slide conversion
 	if isSliding then
 		endSlide(true) -- stand out of the slide, momentum handed back into the run
 		return
@@ -743,6 +791,19 @@ RunService:BindToRenderStep("MovementClientStep", Enum.RenderPriority.Character.
 		if RE_SprintEnd then RE_SprintEnd:FireServer() end
 	end
 
+	-- CROUCH -> SLOPE SLIDE conversion (2026-08-08, deepwoken-style): crouch-walking onto a
+	-- slide-worthy incline converts into the downhill slide. It cannot startSlide directly
+	-- -- the client guard and the server both refuse slides while crouched -- so this fires
+	-- the uncrouch and arms wantSlopeSlide; the CrouchEnd echo handler finishes the job one
+	-- round-trip later. Raycasts only while actually crouched with Ctrl down.
+	if isCrouching and ctrlHeld and not wantSlopeSlide and grounded then
+		local slopeAngle = readSlope()
+		if slopeAngle >= (SLIDECFG.SlideSlopeAngle or 35) and slopeAngle < (SLIDECFG.MaxSlopeAngle or 60) then
+			wantSlopeSlide = true
+			requestCrouchOff()
+		end
+	end
+
 	local mv = Model.moveVector(state)
 	-- Crouch round-trip prediction: until the server's Crouch confirm halves the WalkSpeed
 	-- ceiling for real, scale the move MAGNITUDE by the same multiplier. Predicting through
@@ -771,7 +832,7 @@ local function acquire(char)
 	slideVec = Vector3.zero
 	slideAirTime = 0
 	slideCooldownUntil = 0
-	ctrlHeld, ctrlCrouching, crouchPredict = false, false, false
+	ctrlHeld, ctrlCrouching, crouchPredict, wantSlopeSlide = false, false, false, false
 	isRaging = false
 	sanityTiers = {}
 	lastMoveState = nil

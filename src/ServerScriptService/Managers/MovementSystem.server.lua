@@ -325,7 +325,23 @@ local function processSlide(player)
 	-- root's velocity both replicate, so we can verify rather than take its word for it.
 	local vel = hrp.AssemblyLinearVelocity
 	local flat = Vector3.new(vel.X, 0, vel.Z).Magnitude
-	if flat < (SLIDECFG.MinSpeedToSlide or 12) * 0.6 then return end -- 0.6 slack for latency
+	if flat < (SLIDECFG.MinSpeedToSlide or 12) * 0.6 then -- 0.6 slack for latency
+		-- SLOPE ALLOWANCE (2026-08-08): slope sliding means a slow entry is legitimate on a
+		-- slide-worthy incline (the client seeds it downhill from a standstill). Position
+		-- replicates, so verify the slope the same way the client did: raycast under the
+		-- root and measure the surface angle.
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = {char}
+		local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -6, 0), params)
+		local angle = 0
+		if hit then
+			angle = math.deg(math.acos(math.clamp(hit.Normal:Dot(Vector3.yAxis), -1, 1)))
+		end
+		if angle < (SLIDECFG.SlideSlopeAngle or 35) or angle >= (SLIDECFG.MaxSlopeAngle or 60) then
+			return
+		end
+	end
 
 	local sm = _G.StaminaManager
 	if sm and not sm.drain(player, SLIDECFG.StaminaCost or 8) then return end
