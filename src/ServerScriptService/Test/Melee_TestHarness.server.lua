@@ -218,17 +218,16 @@ test("T13_ConfigIsCoherent", function()
 end)
 
 test("T13b_DashIframeCoverage", function()
-	-- Not a failure, but worth surfacing: doubling Dash.Duration to 0.44 means the 0.30s of
-	-- i-frames no longer cover the whole dash, so its tail is punishable. Deliberate — this
-	-- asserts only that the numbers are what we think they are, so a later change to either
-	-- one gets noticed here rather than in a fight.
+	-- Dash.Duration went 0.22 -> 0.44 -> 0.22 (doubled, then halved back). At 0.44 the 0.30s
+	-- of i-frames stopped covering the whole dash, giving it a punishable tail; back at 0.22
+	-- that tail is gone and a dash is invulnerable start to finish again. This asserts the
+	-- numbers are what we think they are, so a later change to either one is noticed here
+	-- rather than in a fight.
 	local dash = Config.Movement.Dash
 	local dodge = Config.Movement.Dodge
-	assert(dash.Duration == 0.44, "dash duration should be the doubled 0.44")
-	if dodge.IframeDuration < dash.Duration then
-		print(("[MELEE_TEST] NOTE: dash tail is vulnerable — i-frames %.2fs < dash %.2fs")
-			:format(dodge.IframeDuration, dash.Duration))
-	end
+	assert(dash.Duration == 0.22, "dash duration should be back at 0.22")
+	assert(dodge.IframeDuration >= dash.Duration,
+		"i-frames should cover the whole dash again at this duration")
 end)
 
 -- ── Live ───────────────────────────────────────────────────────────────────

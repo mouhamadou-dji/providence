@@ -366,16 +366,17 @@ Config.Movement = {
 		MinSpeed      = 55,   -- == MaxSpeed: dash distance no longer scales with momentum
 		MaxSpeed      = 55,
 		MomentumCurve = 1.5,  -- inert while MinSpeed == MaxSpeed
-		-- DOUBLED 2026-08-09 (0.22 -> 0.44). Distance = speed * Duration, so this doubles the
-		-- travel too: ~10.6 studs standing, ~24.2 sprinting. Everything downstream rescales
-		-- itself off this key -- the server displacement guard, the client's endDash timer,
-		-- and MovementController's dash-clip time-scaling.
+		-- DOUBLED then HALVED BACK 2026-08-09 (0.22 -> 0.44 -> 0.22, dev's final call).
+		-- Distance = speed * Duration, and speed is now constant at 55 (MinSpeed ==
+		-- MaxSpeed above), so every dash covers ~12.1 studs -- snappier than the original
+		-- momentum-scaled tuning (5.3-16.1 studs) but at the same duration that tuning used.
+		-- Everything downstream rescales off this key -- the server displacement guard, the
+		-- client's endDash timer, and MovementController's dash-clip time-scaling.
 		--
-		-- ⚠ Dodge.IframeDuration is 0.30, which USED to cover the whole 0.22s dash. It no
-		-- longer does: the last ~0.14s of a dash is now vulnerable, making the dash a
-		-- commitment with a punishable tail rather than a guaranteed escape. Deliberate --
-		-- raise IframeDuration to 0.44 if that plays badly.
-		Duration      = 0.44, -- distance = speed * Duration, constant at ANY framerate
+		-- Dodge.IframeDuration (0.30) covers the whole dash again at this duration -- the
+		-- "punishable tail" from the 0.44 pass is gone; a dash is once more invulnerable
+		-- start to finish.
+		Duration      = 0.22, -- distance = speed * Duration, constant at ANY framerate
 		Cooldown      = 0.50, -- scaled by TalentManager.getModifier(p, "DashCooldownMult")
 		StaminaCost   = 6,
 		-- RUSTY WINDOW (2026-08-09). Dashing the instant the cooldown lifts is allowed but
