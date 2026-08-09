@@ -133,6 +133,11 @@ end
 -- rolloff is 3D and the library instance stays pristine.
 local animsRoot     = ReplicatedStorage:WaitForChild("_Animations", 5)
 local AnimMovement  = animsRoot and animsRoot:WaitForChild("Movement", 5)
+-- Dash length, so the dash clip can be time-scaled to finish exactly within the dash
+-- rather than being cut off partway through the roll.
+local sharedFolder  = ReplicatedStorage:FindFirstChild("Shared")
+local movementCfg   = sharedFolder and require(sharedFolder:WaitForChild("Config", 5)).Movement
+local DASH_DURATION = (movementCfg and movementCfg.Dash and movementCfg.Dash.Duration) or 0.22
 local soundsRoot    = ReplicatedStorage:WaitForChild("_Sounds", 5)
 local SoundMovement = soundsRoot and soundsRoot:WaitForChild("Movement", 5)
 
@@ -174,6 +179,21 @@ local function loadAnims(animator)
 			ownTrackSet[t] = true
 		end
 	end
+
+	-- Dash_Forward, same instance-not-id loading as the slide. Played for EVERY dash
+	-- direction for now: the clip is forward-only, so a side or back dash currently rolls
+	-- forwards. Directional variants can drop in later exactly the way the walk/run ones are
+	-- wired -- the dash already computes a 4-way token for the server.
+	local dashAnim = AnimMovement and AnimMovement:FindFirstChild("Dash_Forward")
+	if dashAnim and dashAnim:IsA("Animation") and dashAnim.AnimationId ~= "" then
+		local ok, t = pcall(function() return animator:LoadAnimation(dashAnim) end)
+		if ok and t then
+			t.Priority = Enum.AnimationPriority.Action
+			t.Looped = false
+			tracks.dash = t
+			ownTrackSet[t] = true
+		end
+	end
 end
 
 -- The default Roblox Animate script stays enabled (airborne states rely on it), but its
@@ -199,7 +219,16 @@ local function playAnim(name)
 	end
 	currentAnim = name
 	if name and tracks[name] then
-		tracks[name]:Play(0.15)
+		local t = tracks[name]
+		if name == "dash" then
+			-- A dash lasts DASH_DURATION (0.22s). The usual 0.15s crossfade would eat most of
+			-- it, and a clip authored longer than the dash would be cut off mid-roll -- so it
+			-- snaps in and is time-scaled to finish exactly as the dash does.
+			t:Play(0.05)
+			if t.Length > 0 then t:AdjustSpeed(t.Length / DASH_DURATION) end
+		else
+			t:Play(0.15)
+		end
 	end
 end
 
@@ -220,6 +249,9 @@ local function resolveAnim()
 	-- two, and none of that may flicker the clip. No track loaded (unpublished animation) --
 	-- fall through to the normal chain, per the placeholder-skip convention.
 	if moveState == "Sliding" and tracks.slide then return "slide" end
+	-- Dash sits up here with the slide for the same reason: it is brief and can clip the
+	-- Humanoid through a landing/Freefall frame, which must not flicker the clip.
+	if moveState == "Dashing" and tracks.dash then return "dash" end
 
 	if isLanding then return "land" end
 
