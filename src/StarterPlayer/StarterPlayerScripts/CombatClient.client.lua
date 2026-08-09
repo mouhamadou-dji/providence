@@ -11,10 +11,14 @@
 	state. If the two ever disagree the server wins and the animation is simply the wrong
 	one -- which is a cosmetic bug, not an exploit.
 
-	BINDS: LMB = swing. RMB held = guard, RMB tapped = parry. The tap/hold split is decided by
-	how long the button is down: release inside TAP_MAX_SECONDS and it was a parry, keep
-	holding and it becomes a guard. The guard fires on the threshold rather than on press, so
-	a parry tap never briefly registers as a guard.
+	BINDS: LMB = swing. RMB = guard, held for as long as you hold the button.
+
+	THE PARRY IS THE OPENING FRAMES OF THE GUARD (reworked 2026-08-09). There is no separate
+	parry input. Pressing guard opens Config.Melee.ParryWindow of parry frames server-side and
+	then settles into an ordinary block. The previous design split tap-vs-hold and only fired
+	the parry on BUTTON RELEASE, which is precisely why it felt dead -- you had to finish a
+	whole tap before the window even opened, and a 0.2s hold threshold delayed the guard too.
+	Now the press does both, immediately, with one remote.
 
 	ANIMATION PRIORITY IS Action2, NOT Action. MovementController's suppressForeignTracks
 	stops every foreign track at Action or below on each RenderStepped frame -- that is
@@ -36,18 +40,15 @@ local remotes     = ReplicatedStorage:WaitForChild("RemoteEvents", 10)
 local RE_Swing    = remotes:WaitForChild("RequestSwing", 10)
 local RE_Guard    = remotes:WaitForChild("RequestGuard", 10)
 local RE_GuardEnd = remotes:WaitForChild("RequestGuardEnd", 10)
-local RE_Parry    = remotes:WaitForChild("RequestParry", 10)
+-- RequestParry is deliberately NOT bound here any more: raising the guard opens the parry
+-- window server-side. The remote still exists for the meleetest mod command and for a
+-- future dedicated parry input, but the client never fires it.
 local RE_Event    = remotes:WaitForChild("OnMeleeEvent", 10)
 
 local character, hum, animator
 local tracks = {}
 
--- Anything held longer than this is a guard, anything shorter was a parry tap.
-local TAP_MAX_SECONDS = 0.2
-
-local rmbDownAt   = nil
 local guardActive = false
-local guardTimer  = nil
 
 -- ── Animation ─────────────────────────────────────────────────────────────
 local function loadTracks(anim)
@@ -107,25 +108,15 @@ UIS.InputBegan:Connect(function(input, gpe)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		if RE_Swing then RE_Swing:FireServer() end
 	elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
-		rmbDownAt = os.clock()
-		-- Guard engages only once the hold threshold passes, so a parry tap never flickers
-		-- through a guard state on its way out.
-		guardTimer = task.delay(TAP_MAX_SECONDS, function()
-			if rmbDownAt then requestGuard() end
-		end)
+		-- Immediate, on the press. The server opens the parry window as part of raising the
+		-- guard, so there is nothing to wait for and no second remote to send.
+		requestGuard()
 	end
 end)
 
 UIS.InputEnded:Connect(function(input)
 	if input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
-	local heldFor = rmbDownAt and (os.clock() - rmbDownAt) or 0
-	rmbDownAt = nil
-	if guardTimer then task.cancel(guardTimer); guardTimer = nil end
-	if guardActive then
-		releaseGuard()
-	elseif heldFor < TAP_MAX_SECONDS then
-		if RE_Parry then RE_Parry:FireServer() end
-	end
+	releaseGuard()
 end)
 
 -- ── Server events ─────────────────────────────────────────────────────────
@@ -150,8 +141,6 @@ local function acquire(char)
 	hum = char:WaitForChild("Humanoid", 10)
 	animator = hum and hum:WaitForChild("Animator", 10)
 	guardActive = false
-	rmbDownAt = nil
-	if guardTimer then task.cancel(guardTimer); guardTimer = nil end
 	if animator then
 		task.wait(0.1) -- same settle the locomotion loader uses before LoadAnimation
 		loadTracks(animator)
@@ -162,5 +151,5 @@ if player.Character then task.spawn(acquire, player.Character) end
 player.CharacterAdded:Connect(acquire)
 
 print(string.format(
-	"[CombatClient] Loaded -- LMB swing / RMB hold guard, tap parry (%.2fs tap threshold), %d clips",
-	TAP_MAX_SECONDS, #(MCFG.Anims or {})))
+	"[CombatClient] Loaded -- LMB swing / RMB guard (first %.2fs are parry frames), %d clips",
+	MCFG.ParryWindow or 0.25, #(MCFG.Anims or {})))

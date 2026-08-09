@@ -173,16 +173,24 @@ local function fireEvent(player, payload)
 	if player then RE_Event:FireClient(player, payload) end
 end
 
-local function playSound3D(parent, name, volume)
-	if not parent or not name or not SoundsCombat then return end
+local function soundIdOf(name)
+	if not name or not SoundsCombat then return nil end
 	local template = SoundsCombat:FindFirstChild(name)
 	local id = template and template.SoundId
-	-- Silence beats a broken clip: several of these are still unauthored placeholders.
-	if not id or id == "" or id == "rbxassetid://0" then return end
+	-- Several entries in _Sounds.Combat are still unauthored placeholders; treat those as
+	-- absent so callers can fall back rather than playing nothing.
+	if not id or id == "" or id == "rbxassetid://0" then return nil end
+	return id
+end
+
+local function playSound3D(parent, name, volume, pitchMult)
+	if not parent then return end
+	local id = soundIdOf(name)
+	if not id then return end
 	local snd = Instance.new("Sound")
 	snd.SoundId = id
 	snd.Volume = volume or 0.4
-	snd.PlaybackSpeed = 0.92 + math.random() * 0.16
+	snd.PlaybackSpeed = (0.92 + math.random() * 0.16) * (pitchMult or 1)
 	snd.Parent = parent
 	snd:Play()
 	-- Destroy on Ended rather than a fixed timer -- a fixed delay can kill a slow-streaming
@@ -196,6 +204,18 @@ local function playSound3D(parent, name, volume)
 	end
 	snd.Ended:Once(cleanup)
 	task.delay(8, cleanup)
+end
+
+--[[ A parry needs to be AUDIBLE or the player cannot tell a parry from a block.
+     Parry_Perfect exists in _Sounds.Combat but may still be an unauthored placeholder, so
+     when it is missing this falls back to the block sound pitched up — clearly the same
+     family of impact, clearly not the same event. ]]
+local function playParrySound(parent)
+	if soundIdOf(MCFG.ParrySound) then
+		playSound3D(parent, MCFG.ParrySound, 0.55)
+	else
+		playSound3D(parent, MCFG.BlockSound, 0.55, MCFG.ParryPitchFallback or 1.6)
+	end
 end
 
 -- ── Action gating ─────────────────────────────────────────────────────────
@@ -239,6 +259,10 @@ local function applyStagger(player, duration)
 end
 
 -- ── Guard ─────────────────────────────────────────────────────────────────
+--[[ Forward declaration: raising a guard OPENS the parry window, so startGuard needs
+     startParry, which in turn reads guard state. ]]
+local startParry
+
 local function startGuard(player)
 	local s = getPS(player)
 	if not s or s.guarding then return end
@@ -251,6 +275,10 @@ local function startGuard(player)
 	setSpeed(player, MCFG.GuardSpeedMult)
 	local ms = _G.MovementSystem
 	if ms and ms.stopSprint then ms.stopSprint(player) end
+	-- THE PARRY IS THE FIRST FRAMES OF THE GUARD. Opening it here rather than on a separate
+	-- input is the whole responsiveness fix: the window now begins the instant the button
+	-- goes down, instead of waiting for a tap to complete.
+	startParry(player)
 end
 
 local function endGuard(player)
@@ -265,12 +293,19 @@ local function endGuard(player)
 end
 
 -- ── Parry ─────────────────────────────────────────────────────────────────
-local function startParry(player)
+--[[ Opens the parry window. Called by startGuard, never bound to an input of its own.
+
+     A parry that CONNECTS costs nothing (ParryCooldown 0) -- reading correctly should not
+     be punished. Opening frames that catch nothing lock the next attempt for
+     ParryWhiffCooldown, so raising guard is still free but spamming it for the parry frames
+     is not. Guarding itself is never blocked by the cooldown; only the window is. ]]
+function startParry(player)
 	local s = getPS(player)
 	if not s then return end
 	local now = os.clock()
 	if now < s.parryCooldownUntil then
-		fireEvent(player, { kind = "Denied", reason = "cooldown" })
+		-- Guard still went up (startGuard already ran) -- you just get no parry frames.
+		fireEvent(player, { kind = "Denied", reason = "parrycooldown" })
 		return
 	end
 	-- Hitstun is deliberately NOT a block here: parry is the escape from a combo, and the
@@ -361,10 +396,15 @@ local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 			vs.parryIntercepted = true
 			vs.parryStartedAt = nil
 			vs.parryLevel = nil
-			vs.parryCooldownUntil = os.clock() + MCFG.ParryCooldown
+			-- A connected parry costs NOTHING (ParryCooldown is 0): the whiff penalty is what
+			-- makes mashing expensive, so landing the read must not also be taxed.
+			vs.parryCooldownUntil = os.clock() + (MCFG.ParryCooldown or 0)
 		end
 		applyStagger(attacker, MCFG.ParryStagger)
-		playSound3D(vHRP, MCFG.ParrySound, 0.5)
+		playParrySound(vHRP)
+		-- Both sides hear it: the attacker needs to know they were read, not just punished.
+		local aHRP = attackerChar and attackerChar:FindFirstChild("HumanoidRootPart")
+		if aHRP and aHRP ~= vHRP then playParrySound(aHRP) end
 		fireEvent(victimPlayer, { kind = "Parried", level = level, attackerName = attacker.Name })
 		fireEvent(attacker,     { kind = "Parried", level = level, victimName = victimPlayer.Name })
 		return

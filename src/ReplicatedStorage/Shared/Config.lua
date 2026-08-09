@@ -152,9 +152,15 @@ Config.Melee = {
 	-- client cannot claim it reacted when it did not.
 	ReactionGrace = 0.05,
 
-	ParryWindow        = 0.20, -- how long a parry stays live after the tap
-	ParryCooldown      = 1.00, -- after a parry that intercepted something
-	ParryWhiffCooldown = 2.00, -- harsher, so mashing costs more than reading (old stack's lesson)
+	-- PARRY IS THE START OF A GUARD (reworked 2026-08-09). Pressing guard opens the parry
+	-- window immediately -- there is no separate parry input and nothing to release first.
+	-- The previous tap-vs-hold split only fired the parry on BUTTON RELEASE, which is what
+	-- made it feel dead: you had to complete a whole tap before the window even opened.
+	-- Now: press guard -> ParryWindow of parry frames -> it settles into an ordinary guard
+	-- for as long as you keep holding.
+	ParryWindow        = 0.25,
+	ParryCooldown      = 0.00, -- a parry that CONNECTS costs nothing -- reward the read
+	ParryWhiffCooldown = 1.00, -- opening frames that caught nothing lock the next attempt
 	ParryStagger       = 0.80, -- seconds the ATTACKER is staggered by a successful parry
 
 	GuardStaminaPerHit = 8,    -- drained per hit absorbed at the correct level
@@ -183,6 +189,10 @@ Config.Melee = {
 	BlockSound  = "block",
 	ParrySound  = "Parry_Perfect",
 	ParryWhiffSound = "Parry_Whiff",
+	-- If Parry_Perfect is still an unauthored placeholder, the parry plays the BLOCK sound
+	-- pitched up by this instead -- same family of impact, audibly a different event, so a
+	-- parry is never silent and can't be mistaken for an ordinary block.
+	ParryPitchFallback = 1.6,
 
 	-- ── CONTEXTUAL ATTACKS (2026-08-09) ──────────────────────────────────────
 	-- Three attacks the situation picks for you, resolved by CombatModel.attackKind with
@@ -347,9 +357,15 @@ Config.Movement = {
 	-- MovementSystem.dashSpeedFor mirrors these same Config numbers, so the server's
 	-- displacement guard rescales with them automatically -- no second edit needed.
 	Dash = {
-		MinSpeed      = 24,   -- from a dead stop
-		MaxSpeed      = 55,   -- at full sprint
-		MomentumCurve = 1.5,  -- >1 keeps the low end short; 1 would be a straight lerp
+		-- CONSTANT DISTANCE 2026-08-09 (dev: "the dash depends on movement -- make it constant,
+		-- that sprint dash length"). MinSpeed now EQUALS MaxSpeed, so the momentum curve
+		-- resolves to the same speed whatever you were doing: every dash is a full-sprint
+		-- dash, ~24 studs, standing still or flat out. MomentumCurve is therefore inert --
+		-- left in place because both MovementClient and MovementSystem compute the same curve
+		-- from these keys, and pulling it would mean editing that duplicated maths twice.
+		MinSpeed      = 55,   -- == MaxSpeed: dash distance no longer scales with momentum
+		MaxSpeed      = 55,
+		MomentumCurve = 1.5,  -- inert while MinSpeed == MaxSpeed
 		-- DOUBLED 2026-08-09 (0.22 -> 0.44). Distance = speed * Duration, so this doubles the
 		-- travel too: ~10.6 studs standing, ~24.2 sprinting. Everything downstream rescales
 		-- itself off this key -- the server displacement guard, the client's endDash timer,
