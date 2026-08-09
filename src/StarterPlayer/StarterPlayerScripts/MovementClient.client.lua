@@ -93,6 +93,12 @@ local slideVec       = Vector3.zero
 local slideCooldownUntil = 0
 
 local ctrlHeld      = false
+-- CROUCH/SLIDE IS BOUND TO BOTH Ctrl AND C (2026-08-09, dev's call). Tracked as two
+-- independent physical keys so holding both and releasing only one does not cancel the
+-- action -- onCtrlDown/onCtrlUp (below) only fire on the true 0->1 / 1->0 transition of
+-- "is EITHER key down", not on every individual keystroke.
+local ctrlKeyDown  = false
+local cKeyDown     = false
 local ctrlCrouching = false -- an on-toggle we fired is outstanding; pairs every press with a release fire
 local crouchPredict = false -- optimistic half-speed between our RequestCrouch and the server's Crouch confirm
 local wantSlopeSlide = false -- crouch->slope-slide conversion pending the server's CrouchEnd echo
@@ -774,8 +780,11 @@ UIS.InputBegan:Connect(function(input, gpe)
 			sprintHeld = true
 		end
 		lastWDown = now
-	elseif input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
-		onCtrlDown()
+	elseif input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl
+		or input.KeyCode == Enum.KeyCode.C then
+		local wasDown = ctrlKeyDown or cKeyDown
+		if input.KeyCode == Enum.KeyCode.C then cKeyDown = true else ctrlKeyDown = true end
+		if not wasDown then onCtrlDown() end -- only the first of the two keys triggers it
 	end
 end)
 
@@ -784,8 +793,10 @@ UIS.InputEnded:Connect(function(input)
 		sprintHeld = false
 		if sprintActive and RE_SprintEnd then RE_SprintEnd:FireServer() end
 		sprintActive = false
-	elseif input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
-		onCtrlUp()
+	elseif input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl
+		or input.KeyCode == Enum.KeyCode.C then
+		if input.KeyCode == Enum.KeyCode.C then cKeyDown = false else ctrlKeyDown = false end
+		if not (ctrlKeyDown or cKeyDown) then onCtrlUp() end -- only once BOTH are up
 	end
 end)
 
@@ -935,6 +946,7 @@ local function acquire(char)
 	slideAge, slidePrevSpeed, slideAimPrev = 0, 0, nil
 	slideCooldownUntil = 0
 	ctrlHeld, ctrlCrouching, crouchPredict, wantSlopeSlide = false, false, false, false
+	ctrlKeyDown, cKeyDown = false, false
 	isRaging = false
 	sanityTiers = {}
 	lastMoveState = nil
@@ -954,6 +966,6 @@ if player.Character then acquire(player.Character) end
 player.CharacterAdded:Connect(acquire)
 
 print(string.format(
-	"[MovementClient] Loaded -- WxW sprint / Q dash (%.1f-%.1f studs) / Ctrl slide-or-crouch, WalkSpeed untouched",
+	"[MovementClient] Loaded -- WxW sprint / Q dash (%.1f-%.1f studs) / Ctrl or C slide-or-crouch, WalkSpeed untouched",
 	(DASHCFG.MinSpeed or 32) * (DASHCFG.Duration or 0.22),
 	(DASHCFG.MaxSpeed or 73) * (DASHCFG.Duration or 0.22)))

@@ -27,7 +27,6 @@
 
 local Players           = game:GetService("Players")
 local UIS               = game:GetService("UserInputService")
-local RunService        = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
@@ -45,7 +44,6 @@ local RE_GuardEnd = remotes:WaitForChild("RequestGuardEnd", 10)
 -- window server-side. The remote still exists for the meleetest mod command and for a
 -- future dedicated parry input, but the client never fires it.
 local RE_Event    = remotes:WaitForChild("OnMeleeEvent", 10)
-local RE_Grabbed  = remotes:WaitForChild("OnGrabbed", 10)
 
 local character, hum, animator
 local tracks = {}
@@ -137,61 +135,12 @@ if RE_Event then
 	end)
 end
 
--- ── The aerial grab (victim side) ─────────────────────────────────────────
---[[ We are being dragged. The SERVER cannot move us -- a player character is client-owned,
-     so a server-side CFrame write is overwritten on the very next replication tick. Only
-     this client's own writes stick, which is why the server sends the holder and an offset
-     and we do the pivoting ourselves. Same contract as VelocityPush, and the same technique
-     BoatDeckClient uses to carry a standing player along a moving deck.
-
-     One remote starts it and it self-expires: the holder's position already replicates here,
-     so following costs no further traffic and has no round-trip lag, and an attacker who
-     disconnects mid-grab cannot strand us. ]]
-local grabConn, grabUntil = nil, 0
-
-local function endGrab()
-	if grabConn then grabConn:Disconnect(); grabConn = nil end
-	grabUntil = 0
-end
-
-local function beginGrab(holder, offset, duration)
-	local holderRoot = holder and holder:FindFirstChild("HumanoidRootPart")
-	if not holderRoot or not character then return end
-	grabUntil = os.clock() + (duration or 0.3)
-	if grabConn then grabConn:Disconnect() end
-	grabConn = RunService.RenderStepped:Connect(function()
-		-- Any of these going away ends it: the holder dying or leaving, us dying, or simply
-		-- running out the clock. There is deliberately no escape input -- being caught is a
-		-- commitment for both sides.
-		if os.clock() >= grabUntil
-			or not character or not character.Parent
-			or not holderRoot.Parent
-			or not hum or hum.Health <= 0 then
-			endGrab()
-			return
-		end
-		character:PivotTo(holderRoot.CFrame * CFrame.new(offset))
-		-- Cancel our own walking for the duration, the same way VelocityClient suppresses
-		-- input while a contribution is driving -- without it the Humanoid keeps trying to
-		-- walk and fights the pivot every frame.
-		hum:Move(Vector3.zero, false)
-	end)
-end
-
-if RE_Grabbed then
-	RE_Grabbed.OnClientEvent:Connect(function(payload)
-		if type(payload) ~= "table" then return end
-		beginGrab(payload.holder, payload.offset or Vector3.new(0, 0, -4), payload.duration)
-	end)
-end
-
 -- ── Character lifecycle ───────────────────────────────────────────────────
 local function acquire(char)
 	character = char
 	hum = char:WaitForChild("Humanoid", 10)
 	animator = hum and hum:WaitForChild("Animator", 10)
 	guardActive = false
-	endGrab() -- a fresh body is never still being dragged by the old one's holder
 	if animator then
 		task.wait(0.1) -- same settle the locomotion loader uses before LoadAnimation
 		loadTracks(animator)

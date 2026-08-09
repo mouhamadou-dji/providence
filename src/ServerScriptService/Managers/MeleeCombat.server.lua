@@ -59,7 +59,6 @@ local RE_Guard    = getOrCreateRE("RequestGuard")
 local RE_GuardEnd = getOrCreateRE("RequestGuardEnd")
 local RE_Parry    = getOrCreateRE("RequestParry")
 local RE_Event    = getOrCreateRE("OnMeleeEvent")
-local RE_Grabbed  = getOrCreateRE("OnGrabbed")
 
 local SoundsCombat = (function()
 	local s = ReplicatedStorage:FindFirstChild("_Sounds")
@@ -398,33 +397,6 @@ local function hasLineOfSight(attackerChar, fromPos, victimChar, toPos)
 	return hit == nil
 end
 
---[[ Nearest AIRBORNE player within Aerial.GrabRange, for the aerial grab.
-
-     Airborne is tested as FREEFALL specifically, not FloorMaterial == Air. The archived
-     stack learned this the hard way: the Jumping state keeps applying the Humanoid's own
-     upward force every physics step, which fights anything trying to position the victim.
-     Waiting for Freefall means we only ever grab someone who is genuinely falling -- which
-     is also exactly the window an up-tilt creates. ]]
-local function findGrabTarget(attacker, attackerChar, attackerHRP)
-	local range = MCFG.Aerial.GrabRange or 12
-	local best, bestDist = nil, range
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= attacker then
-			local c = p.Character
-			local h = c and c:FindFirstChildOfClass("Humanoid")
-			local r = c and c:FindFirstChild("HumanoidRootPart")
-			if c and h and r and h.Health > 0
-				and h:GetState() == Enum.HumanoidStateType.Freefall then
-				local d = (r.Position - attackerHRP.Position).Magnitude
-				if d < bestDist then
-					best, bestDist = { player = p, char = c }, d
-				end
-			end
-		end
-	end
-	return best
-end
-
 -- ── Resolution ────────────────────────────────────────────────────────────
 --[[ `atk` describes the swing once, so it can be threaded through resolution without a
      growing tail of positional arguments:
@@ -625,20 +597,6 @@ local function processSwing(attacker)
 				duration = MCFG.Windup,
 				decay    = "linear",
 				suppressInput = false, -- you keep steering through it; it is not a dash
-			})
-		end
-	end
-
-	-- THE AERIAL GRAB. Catch an airborne victim during the windup and drag them along in
-	-- front of you, then the hitbox opens with them parked there and the ordinary resolution
-	-- path lands the aerial's slam -- no special case needed downstream.
-	if kind == Model.Kind.Aerial then
-		local caught = findGrabTarget(attacker, char, hrp)
-		if caught then
-			RE_Grabbed:FireClient(caught.player, {
-				holder   = char,
-				offset   = MCFG.Aerial.GrabOffset,
-				duration = MCFG.Windup,
 			})
 		end
 	end

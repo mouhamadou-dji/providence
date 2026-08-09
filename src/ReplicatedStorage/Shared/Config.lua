@@ -214,22 +214,12 @@ Config.Melee = {
 
 	-- Airborne + attack. Slams the victim down (DownForce is applied as NEGATIVE vertical),
 	-- and since 2026-08-09 pt2 it carries you forward exactly like the lunge does.
+	--
+	-- The AERIAL GRAB (catching and dragging an airborne victim in front of you before the
+	-- slam) was built and then pulled the same session, 2026-08-09 pt3 -- dev's call: "doing
+	-- too much." The attack itself is unchanged; only the grab-and-drag half is gone.
 	Aerial = {
 		Damage = 12, Knockback = 25, DownForce = 20, ForwardForce = 50, AnimIndex = 4,
-
-		-- THE AERIAL GRAB. Catch an AIRBORNE victim within GrabRange during the windup and
-		-- they are locked GrabOffset in front of you and dragged for the rest of it, then
-		-- released into the normal aerial slam when the hitbox opens.
-		--
-		-- This cannot be done with the velocity stack: VelocityModel strips Y, treats
-		-- `vertical` as a one-shot impulse and runs the constraint in Plane mode with gravity
-		-- live, so it can shove a victim but never hold one aloft. And no part of this
-		-- codebase has ever taken server network ownership of a player character. The victim's
-		-- OWN CLIENT does the pivoting instead, which is the same "server decides, client
-		-- applies" contract VelocityPush uses -- and the same trick BoatDeckClient already
-		-- uses to carry a standing player along a moving deck.
-		GrabRange  = 12,
-		GrabOffset = Vector3.new(0, 0, -4),
 	},
 
 	-- Release crouch, then attack within Window. Launches the victim upward.

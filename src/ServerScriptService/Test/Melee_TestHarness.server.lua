@@ -230,12 +230,11 @@ test("T13_ConfigIsCoherent", function()
 	assert(MCFG.Lunge.ForwardForce > 0, "a lunge must actually carry you forward")
 	-- The aerial carries you forward too since 2026-08-09 pt2.
 	assert(MCFG.Aerial.ForwardForce > 0, "an aerial must carry you forward as well")
-	-- The grab has to reach further than the hitbox, or it could never catch anyone before
-	-- the swing simply hits them instead.
-	assert(MCFG.Aerial.GrabRange > MCFG.HitboxSize.Z,
-		"GrabRange must exceed the hitbox depth or the grab can never trigger first")
-	-- The victim is parked in FRONT of the holder: negative Z is forward in Roblox.
-	assert(MCFG.Aerial.GrabOffset.Z < 0, "GrabOffset must place the victim in front")
+	-- The grab (catch + drag an airborne victim before the slam) was built and pulled the
+	-- same session -- dev's call: "doing too much." Assert it stays gone rather than
+	-- reappearing silently if Config is ever merged from an older branch.
+	assert(MCFG.Aerial.GrabRange == nil and MCFG.Aerial.GrabOffset == nil,
+		"the aerial grab was removed 2026-08-09 pt3 -- these keys should not exist")
 end)
 
 test("T13b_DashIframeCoverage", function()

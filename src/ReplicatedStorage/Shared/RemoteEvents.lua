@@ -46,14 +46,10 @@ RemoteEvents.RequestGuard    = getOrCreate("RequestGuard")    -- client -> serve
 RemoteEvents.RequestGuardEnd = getOrCreate("RequestGuardEnd") -- client -> server: (no payload) stop guarding
 RemoteEvents.RequestParry    = getOrCreate("RequestParry")    -- client -> server: (no payload) tap parry
 RemoteEvents.OnMeleeEvent    = getOrCreate("OnMeleeEvent")    -- server -> client: {kind="Swing"|"Hit"|"Blocked"|"Parried"|"ParryWhiff"|"Staggered"|"Denied", role="attacker"|"victim", level?, hit?, reason?, attackerName?, victimName?}
--- server -> the GRABBED client only: {holder=Model, offset=Vector3, duration=number}.
--- The victim's own client pivots itself to the holder each frame, because a player character
--- is client-owned and a server-side CFrame write is overwritten on the next replication tick.
--- Positional sibling of VelocityPush, and the same technique BoatDeckClient uses to carry a
--- standing player along a moving deck. One fire per grab: the holder's position already
--- replicates, so the follow needs no per-tick streaming and self-expires after `duration`
--- (which is what stops a disconnecting attacker from stranding anyone).
-RemoteEvents.OnGrabbed       = getOrCreate("OnGrabbed")
+-- OnGrabbed (the aerial grab-and-drag) was declared, built, and pulled the same session,
+-- 2026-08-09 pt3 -- dev's call: "doing too much." Left out on purpose, same reason the
+-- retired combat remotes above stay out: getOrCreate would resurrect it as an orphan
+-- instance nothing fires or listens to.
 
 -- MOVEMENT -- stack removed 2026-08-04 (full revamp). RequestDash, RequestSprint,
 -- RequestSprintEnd, RequestSlide and RequestJump were deleted with it, along with the
