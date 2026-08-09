@@ -338,7 +338,12 @@ Config.Movement = {
 		-- points, at up to SteerRateDeg degrees per second -- a real rate limit rather than
 		-- the old dt-scaled blend, so it behaves the same at any framerate. Speed is
 		-- preserved through the turn; only the direction changes.
-		SteerRateDeg    = 110,
+		-- 110 -> 220 (2026-08-09, dev: "make the turnability 2x stronger"). This is a rate
+		-- CEILING, not an amount added: it caps how fast the slide may rotate to follow your
+		-- aim, so raising it only matters when you turn faster than the old limit allowed.
+		-- Gentle turns are unchanged; hard ones now keep up with the camera instead of
+		-- lagging behind it.
+		SteerRateDeg    = 220,
 		-- DURATION (2026-08-08 pt2, dev: "decrease the sliding duration in half however the
 		-- duration increases depending on whether you're accelerating"). The clock only runs
 		-- while the slide is NOT gaining speed, so a downhill run that keeps accelerating
