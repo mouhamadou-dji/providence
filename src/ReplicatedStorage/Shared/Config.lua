@@ -12,8 +12,11 @@ Config.ModRankMinimum = 100
 
 Config.Stamina = {
 	-- ⚠ DEV TOGGLE (2026-08-08): true = NOTHING costs stamina (StaminaManager.drain
-	-- succeeds without draining). The dev asked for free stamina while iterating on
-	-- movement; flip to false before anything real ships.
+	-- succeeds without draining) AND dashes stop consuming dodge stock (MovementSystem
+	-- .consumeDodge always returns "clean"). Stock is a SEPARATE resource from stamina --
+	-- 3 charges regenerating one per Dodge.RegenTime -- which is why gating drain alone
+	-- still left the dev watching a meter fall on every dash. The dev asked for free
+	-- movement while iterating; flip to false before anything real ships.
 	FreeStamina = true,
 	Max = 100,
 	RegenIdle    = 1.5,  -- stamina per second out of combat (was 1, bumped a bit faster)
@@ -263,7 +266,12 @@ Config.Movement = {
 	-- cap. MaxSpeed stays the DOWNHILL ceiling; a slide just may not START that fast.
 	Slide = {
 		EntryImpulse    = 10,   -- instant burst added to your current speed on entry
-		MaxEntrySpeed   = 45,   -- entry clamp: sprint enters ~36, a dash-chain at 45, hills may still build to MaxSpeed
+		-- ENTRY CLAMP = A SPRINT SLIDE, EXACTLY (2026-08-08 pt2, dev: "if you were at the
+		-- peak of the sprint and you started sliding that should be the max initial").
+		-- SprintSpeed 26 + EntryImpulse 10 = 36, so no chain -- dash included -- can enter
+		-- faster than a full-sprint entry. Hills may still build past this to MaxSpeed;
+		-- this caps the START only.
+		MaxEntrySpeed   = 36,
 		MinSpeedToSlide = 12,   -- must already be moving this fast to slide at all
 		-- The Ctrl arbitration line: faster than this the press means slide, otherwise it
 		-- means crouch. BaseWalkSpeed + 1 so a plain walk never trips it on speed jitter.
@@ -301,7 +309,21 @@ Config.Movement = {
 		-- or two over every bump. Ending on the first airborne frame would stutter a hill slide
 		-- out almost immediately; a ledge has to actually be a ledge.
 		AirGrace        = 0.15, -- seconds off the ground before the slide gives up
-		SteerControl    = 0.30, -- how much you may carve mid-slide (0 = none, 1 = full)
+		SteerControl    = 0.30, -- legacy carve weight, kept for the no-facing fallback path
+		-- STEERING BY FACING (2026-08-08 pt2, dev: "rotate your sliding momentum depending
+		-- on your primary part"). The slide's heading now turns toward where the root part
+		-- points, at up to SteerRateDeg degrees per second -- a real rate limit rather than
+		-- the old dt-scaled blend, so it behaves the same at any framerate. Speed is
+		-- preserved through the turn; only the direction changes.
+		SteerRateDeg    = 110,
+		-- DURATION (2026-08-08 pt2, dev: "decrease the sliding duration in half however the
+		-- duration increases depending on whether you're accelerating"). The clock only runs
+		-- while the slide is NOT gaining speed, so a downhill run that keeps accelerating
+		-- never ages -- it ends when the hill does. On the flat you get MaxDuration and out.
+		MaxDuration     = 1.0,
+		-- Speed gain per second above which a slide counts as "accelerating" and its clock
+		-- pauses. Small positive number, not zero, so physics jitter can't stall the timer.
+		AccelPauseRate  = 1.0,
 		MaxSpeed        = 60,   -- hard cap so a long hill cannot launch you
 		StaminaCost     = 8,
 		Cooldown        = 0.60,

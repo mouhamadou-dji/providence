@@ -158,6 +158,10 @@ end
 
 local function consumeDodge(player, s)
 	regenStock(s)
+	-- DEV TOGGLE (2026-08-08): Config.Stamina.FreeStamina frees dodge STOCK as well as
+	-- stamina. Stock is a separate resource, so gating StaminaManager.drain alone still
+	-- left a meter draining on every dash -- which is exactly what the dev reported.
+	if (Config.Stamina or {}).FreeStamina then return "clean" end
 	-- Rage is pure commitment: dodges stop costing stock, but the client has already gutted
 	-- your braking and cornering in exchange.
 	local rm = _G.RageManager

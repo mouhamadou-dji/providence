@@ -304,6 +304,10 @@ end
 -- on the FIRST Air frame would make a slide down real terrain stutter out almost immediately.
 -- A ledge still ends it, it just has to be a ledge rather than a pebble.
 local slideAirTime = 0
+-- Duration clock (2026-08-08 pt2). Only advances while the slide is NOT gaining speed, so
+-- a hill that keeps accelerating you never ages the slide out -- it ends when the hill does.
+local slideAge      = 0
+local slidePrevSpeed = 0
 
 local function endSlide(preserveMomentum)
 	if not isSliding then return end
@@ -366,6 +370,8 @@ local function startSlide()
 
 	isSliding = true
 	slideAirTime = 0
+	slideAge = 0
+	slidePrevSpeed = 0 -- 0 so the first frame always reads as "accelerating" (entry burst)
 	setOwnFacing(true)
 	-- INSTANT entry: velocity is set outright, never ramped into. No duration -- a slide
 	-- ends when its own physics says so (speed floor, slope, ledge), so the contribution
@@ -436,12 +442,24 @@ local function updateSlide(dt)
 		slideVec = dir and dir * speed or Vector3.zero
 	end
 
-	-- Limited carving. Full steering would make this a hover; none at all makes it feel like
-	-- a cutscene. A fraction of your input nudges the heading while speed is preserved.
-	local input = readInputDir()
+	-- STEERING BY FACING (2026-08-08 pt2). The heading turns toward where the ROOT PART
+	-- points -- so aiming the body (camera under shiftlock, movement input otherwise) aims
+	-- the slide -- capped at SteerRateDeg degrees per second. A rate limit rather than the
+	-- old dt-scaled blend, so the same input steers identically at 30fps and 240fps. Speed
+	-- is preserved through the turn: this rotates momentum, it never adds or removes it.
 	local dir = Model.flatUnit(slideVec)
-	if input and dir then
-		local steered = Model.flatUnit(dir + input * (SLIDECFG.SteerControl or 0.3) * dt * 8)
+	local target = (hrp and Model.flatUnit(hrp.CFrame.LookVector)) or readInputDir()
+	if dir and target then
+		local maxStep = (SLIDECFG.SteerRateDeg or 110) * dt
+		local off = Model.angleBetweenDeg(dir, target)
+		local steered
+		if off <= maxStep then
+			steered = target -- close enough to snap; prevents jitter around the target
+		else
+			-- Rotate `dir` toward `target` by exactly maxStep degrees, in the shorter direction.
+			local sign = (dir:Cross(target).Y >= 0) and 1 or -1
+			steered = Model.flatUnit(CFrame.fromAxisAngle(Vector3.yAxis, math.rad(maxStep) * sign) * dir)
+		end
 		if steered then slideVec = steered * slideVec.Magnitude end
 	end
 
@@ -454,6 +472,19 @@ local function updateSlide(dt)
 	-- Re-steer the live contribution rather than re-pushing: update keeps the same record,
 	-- so the slide stays ONE contribution being aimed, not a stream of replacements.
 	vc().update("slide", slideVec)
+
+	-- DURATION. The clock only runs while you are not gaining speed: accelerating (the
+	-- entry burst, or a hill feeding you) pauses it, so a downhill run lasts as long as the
+	-- hill and a flat slide gets MaxDuration and no more. AccelPauseRate is a small positive
+	-- threshold rather than zero so per-frame physics jitter cannot stall the timer forever.
+	local nowSpeed = slideVec.Magnitude
+	local gaining = (nowSpeed - slidePrevSpeed) > (SLIDECFG.AccelPauseRate or 1) * dt
+	slidePrevSpeed = nowSpeed
+	if not gaining then slideAge += dt end
+	-- Timing out does NOT chain into the crouch the way sliding to a stop does: you are still
+	-- moving here, and dropping a moving player into a crouch reads as a snag. The handback
+	-- flows the remaining speed into a run instead; Ctrl can be tapped again to re-slide.
+	if slideAge >= (SLIDECFG.MaxDuration or 1.0) then endSlide(true); return end
 
 	if slideVec.Magnitude < (SLIDECFG.MinSlideSpeed or 10) then
 		endSlide(true)
@@ -831,6 +862,7 @@ local function acquire(char)
 	isSliding = false
 	slideVec = Vector3.zero
 	slideAirTime = 0
+	slideAge, slidePrevSpeed = 0, 0
 	slideCooldownUntil = 0
 	ctrlHeld, ctrlCrouching, crouchPredict, wantSlopeSlide = false, false, false, false
 	isRaging = false
