@@ -257,7 +257,25 @@ local function hookDeath(p, char)
 			-- Grip/execution deaths already fire their own WitnessGripDeath from CombatManager's
 			-- execution-completion callback; this generic hook covers every OTHER way a player's
 			-- Humanoid can actually die (environmental, PDE, etc.), so it stays plain WitnessDeath.
-			if sanM then sanM.notifyWitnessDeath(deathPos, false, {[p]=true}) end
+			--
+			-- THE KILLER IS NOT A BYSTANDER (fixed 2026-08-09). This used to exclude only the
+			-- corpse, so whoever landed the killing blow was counted as having WITNESSED a
+			-- death -- and melee reach is ~5 studs against a 30-stud witness radius, so the
+			-- killer was always inside it. Every kill handed them the Anxiety feeling (red
+			-- pulsing wash + camera shake, right as they killed someone) and a permanent
+			-- +10 Sanity. The archived pre-teardown call excluded both parties; the generic
+			-- Died hook lost that because Humanoid.Died does not know who the killer was.
+			-- MeleeCombat leaves the trail on the victim's character instead.
+			local exclude = { [p] = true }
+			local killerId = char:GetAttribute("LastHitBy")
+			local hitAt = char:GetAttribute("LastHitAt")
+			-- Only a RECENT hit counts as the kill, so a fight ten minutes ago cannot mute a
+			-- later environmental death for someone standing nearby.
+			if killerId and hitAt and (os.clock() - hitAt) <= 5 then
+				local killer = Players:GetPlayerByUserId(killerId)
+				if killer then exclude[killer] = true end
+			end
+			if sanM then sanM.notifyWitnessDeath(deathPos, false, exclude) end
 		end
 		task.spawn(function()
 			if LoreManager.isPDEEligible(p) then

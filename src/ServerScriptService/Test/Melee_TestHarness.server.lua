@@ -100,6 +100,19 @@ test("T7_ParryWindowBoundaries", function()
 	assert(Model.resolve(Level.High, d, 100 + w + 1, MCFG) == "Hit", "past the end must be expired")
 end)
 
+test("T8b_NilVictimResolvesWithoutThrowing", function()
+	-- REGRESSION (2026-08-09). victimPlayer is nil for every NPC, wolf, shroom and the
+	-- CombatDummy. The hit payload used to dereference victimPlayer.Name unguarded, which
+	-- threw inside the swing coroutine -- so the speed/state restore never ran and the
+	-- attacker was left stuck at attack walk-speed until their next swing. Anyone testing
+	-- against the dummy hit this on every single swing.
+	local ok, err = pcall(function()
+		return Model.resolve(Level.High, nil, 0, MCFG)
+	end)
+	assert(ok, "resolving against a nil defence must not throw: " .. tostring(err))
+	assert(Model.resolve(Level.High, nil, 0, MCFG) == "Hit", "an NPC with no defence is hit")
+end)
+
 test("T8_NoDefenceIsAHit", function()
 	assert(Model.resolve(Level.High, nil, 0, MCFG) == "Hit", "nil defence must be a hit")
 	assert(Model.resolve(Level.High, {}, 0, MCFG) == "Hit", "empty defence must be a hit")
@@ -215,6 +228,14 @@ test("T13_ConfigIsCoherent", function()
 	end
 	-- The lunge push lasts the windup, so it must not outlive the swing it belongs to.
 	assert(MCFG.Lunge.ForwardForce > 0, "a lunge must actually carry you forward")
+	-- The aerial carries you forward too since 2026-08-09 pt2.
+	assert(MCFG.Aerial.ForwardForce > 0, "an aerial must carry you forward as well")
+	-- The grab has to reach further than the hitbox, or it could never catch anyone before
+	-- the swing simply hits them instead.
+	assert(MCFG.Aerial.GrabRange > MCFG.HitboxSize.Z,
+		"GrabRange must exceed the hitbox depth or the grab can never trigger first")
+	-- The victim is parked in FRONT of the holder: negative Z is forward in Roblox.
+	assert(MCFG.Aerial.GrabOffset.Z < 0, "GrabOffset must place the victim in front")
 end)
 
 test("T13b_DashIframeCoverage", function()

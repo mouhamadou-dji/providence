@@ -206,14 +206,30 @@ Config.Melee = {
 	-- Sprinting + attack. A committed forward lunge: the push goes through the velocity
 	-- stack as a contribution rather than a raw AssemblyLinearVelocity write, so it sums
 	-- with knockback instead of fighting it.
+	-- ForwardForce doubled 25 -> 50 (2026-08-09 pt2).
 	Lunge = {
-		Damage = 12, Knockback = 30, ForwardForce = 25,
+		Damage = 12, Knockback = 30, ForwardForce = 50,
 		Cooldown = 0.8, AnimIndex = 4,
 	},
 
-	-- Airborne + attack. Slams the victim down (DownForce is applied as NEGATIVE vertical).
+	-- Airborne + attack. Slams the victim down (DownForce is applied as NEGATIVE vertical),
+	-- and since 2026-08-09 pt2 it carries you forward exactly like the lunge does.
 	Aerial = {
-		Damage = 12, Knockback = 25, DownForce = 20, AnimIndex = 4,
+		Damage = 12, Knockback = 25, DownForce = 20, ForwardForce = 50, AnimIndex = 4,
+
+		-- THE AERIAL GRAB. Catch an AIRBORNE victim within GrabRange during the windup and
+		-- they are locked GrabOffset in front of you and dragged for the rest of it, then
+		-- released into the normal aerial slam when the hitbox opens.
+		--
+		-- This cannot be done with the velocity stack: VelocityModel strips Y, treats
+		-- `vertical` as a one-shot impulse and runs the constraint in Plane mode with gravity
+		-- live, so it can shove a victim but never hold one aloft. And no part of this
+		-- codebase has ever taken server network ownership of a player character. The victim's
+		-- OWN CLIENT does the pivoting instead, which is the same "server decides, client
+		-- applies" contract VelocityPush uses -- and the same trick BoatDeckClient already
+		-- uses to carry a standing player along a moving deck.
+		GrabRange  = 12,
+		GrabOffset = Vector3.new(0, 0, -4),
 	},
 
 	-- Release crouch, then attack within Window. Launches the victim upward.

@@ -59,6 +59,7 @@ local RE_Guard    = getOrCreateRE("RequestGuard")
 local RE_GuardEnd = getOrCreateRE("RequestGuardEnd")
 local RE_Parry    = getOrCreateRE("RequestParry")
 local RE_Event    = getOrCreateRE("OnMeleeEvent")
+local RE_Grabbed  = getOrCreateRE("OnGrabbed")
 
 local SoundsCombat = (function()
 	local s = ReplicatedStorage:FindFirstChild("_Sounds")
@@ -171,6 +172,29 @@ end
 
 local function fireEvent(player, payload)
 	if player then RE_Event:FireClient(player, payload) end
+end
+
+--[[ Tell both sides about an exchange.
+
+     ROLE IS EXPLICIT, and that matters. Both parties used to receive the same `kind` string
+     ("Hit"), distinguishable only by which of attackerName/victimName happened to be set --
+     so the first client handler keyed on kind == "Hit" would have given the ATTACKER the
+     victim's flinch. That is exactly the bug class that put the killer's screen through the
+     victim's death vignette, so the discriminator is a first-class field here.
+
+     victimPlayer is nil for every NPC, wolf, shroom and the CombatDummy, so nothing may
+     dereference it unguarded -- doing so previously threw inside the swing coroutine and
+     left the attacker stuck at attack walk-speed until their next swing. ]]
+local function fireExchange(kind, attacker, victimPlayer, extra)
+	local victimName = victimPlayer and victimPlayer.Name or "NPC"
+	local base = extra or {}
+	local toVictim = table.clone(base)
+	toVictim.kind, toVictim.role, toVictim.attackerName = kind, "victim", attacker.Name
+	fireEvent(victimPlayer, toVictim)
+
+	local toAttacker = table.clone(base)
+	toAttacker.kind, toAttacker.role, toAttacker.victimName = kind, "attacker", victimName
+	fireEvent(attacker, toAttacker)
 end
 
 local function soundIdOf(name)
@@ -374,6 +398,33 @@ local function hasLineOfSight(attackerChar, fromPos, victimChar, toPos)
 	return hit == nil
 end
 
+--[[ Nearest AIRBORNE player within Aerial.GrabRange, for the aerial grab.
+
+     Airborne is tested as FREEFALL specifically, not FloorMaterial == Air. The archived
+     stack learned this the hard way: the Jumping state keeps applying the Humanoid's own
+     upward force every physics step, which fights anything trying to position the victim.
+     Waiting for Freefall means we only ever grab someone who is genuinely falling -- which
+     is also exactly the window an up-tilt creates. ]]
+local function findGrabTarget(attacker, attackerChar, attackerHRP)
+	local range = MCFG.Aerial.GrabRange or 12
+	local best, bestDist = nil, range
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= attacker then
+			local c = p.Character
+			local h = c and c:FindFirstChildOfClass("Humanoid")
+			local r = c and c:FindFirstChild("HumanoidRootPart")
+			if c and h and r and h.Health > 0
+				and h:GetState() == Enum.HumanoidStateType.Freefall then
+				local d = (r.Position - attackerHRP.Position).Magnitude
+				if d < bestDist then
+					best, bestDist = { player = p, char = c }, d
+				end
+			end
+		end
+	end
+	return best
+end
+
 -- ── Resolution ────────────────────────────────────────────────────────────
 --[[ `atk` describes the swing once, so it can be threaded through resolution without a
      growing tail of positional arguments:
@@ -405,8 +456,7 @@ local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 		-- Both sides hear it: the attacker needs to know they were read, not just punished.
 		local aHRP = attackerChar and attackerChar:FindFirstChild("HumanoidRootPart")
 		if aHRP and aHRP ~= vHRP then playParrySound(aHRP) end
-		fireEvent(victimPlayer, { kind = "Parried", level = level, attackerName = attacker.Name })
-		fireEvent(attacker,     { kind = "Parried", level = level, victimName = victimPlayer.Name })
+		fireExchange("Parried", attacker, victimPlayer, { level = level })
 		return
 	end
 
@@ -419,8 +469,7 @@ local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 		if sm and sm.drain then afforded = sm.drain(victimPlayer, MCFG.GuardStaminaPerHit) end
 		if afforded then
 			playSound3D(vHRP, MCFG.BlockSound, 0.45)
-			fireEvent(victimPlayer, { kind = "Blocked", level = level, attackerName = attacker.Name })
-			fireEvent(attacker,     { kind = "Blocked", level = level, victimName = victimPlayer.Name })
+			fireExchange("Blocked", attacker, victimPlayer, { level = level })
 			return
 		end
 		endGuard(victimPlayer) -- out of stamina: the guard collapses and the hit lands
@@ -472,10 +521,17 @@ local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 		vs.hitLockUntil = math.max(vs.hitLockUntil, os.clock() + (MCFG.HitLockout or 0.3))
 	end
 
+	-- KILL ATTRIBUTION. Humanoid.Died carries no notion of who did it, so the damage source
+	-- has to leave the trail: LoreManager's death hook reads these to keep the KILLER out of
+	-- the witnessed-a-death crowd. Without it the killer catches the Anxiety vignette and a
+	-- permanent +10 Sanity on every kill, because they are always inside the 30-stud witness
+	-- radius of someone they just hit from 5 studs away.
+	victimChar:SetAttribute("LastHitBy", attacker.UserId)
+	victimChar:SetAttribute("LastHitAt", os.clock())
+
 	local hitSounds = MCFG.HitSounds or {}
 	playSound3D(vHRP, hitSounds[math.clamp(hitNum, 1, #hitSounds)], 0.45)
-	fireEvent(victimPlayer, { kind = "Hit", level = level, hit = hitNum, attackerName = attacker.Name })
-	fireEvent(attacker,     { kind = "Hit", level = level, hit = hitNum, victimName = victimPlayer.Name })
+	fireExchange("Hit", attacker, victimPlayer, { level = level, hit = hitNum })
 end
 
 local function resolveAgainst(atk, victimChar, victimPlayer, hum)
@@ -554,20 +610,35 @@ local function processSwing(attacker)
 	setCombatState(attacker, "Attacking")
 	swungBindable:Fire(attacker) -- WolfManager read-parry hook
 
-	-- LUNGE carries you forward. Pushed as a velocity CONTRIBUTION rather than a raw
-	-- AssemblyLinearVelocity write (which the old stack used and which a client-owned
-	-- character overwrites on the next replication tick anyway), so it sums with any
-	-- knockback landing at the same moment instead of one clobbering the other.
-	if kind == Model.Kind.Lunge then
-		if ms and ms.stopSprint then ms.stopSprint(attacker) end
+	-- LUNGE AND AERIAL both carry you forward. Pushed as a velocity CONTRIBUTION rather than a
+	-- raw AssemblyLinearVelocity write (which the old stack used and which a client-owned
+	-- character overwrites on the next replication tick anyway), so it sums with any knockback
+	-- landing at the same moment instead of one clobbering the other.
+	local forwardCfg = MCFG[kind]
+	if forwardCfg and forwardCfg.ForwardForce then
+		if kind == Model.Kind.Lunge and ms and ms.stopSprint then ms.stopSprint(attacker) end
 		local vm = _G.VelocityManager
 		local dir = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
 		if vm and vm.pushPlayer and dir.Magnitude > 0.01 then
 			pcall(vm.pushPlayer, attacker, {
-				planar   = dir.Unit * (MCFG.Lunge.ForwardForce or 25),
+				planar   = dir.Unit * forwardCfg.ForwardForce,
 				duration = MCFG.Windup,
 				decay    = "linear",
-				suppressInput = false, -- you keep steering through a lunge; it is not a dash
+				suppressInput = false, -- you keep steering through it; it is not a dash
+			})
+		end
+	end
+
+	-- THE AERIAL GRAB. Catch an airborne victim during the windup and drag them along in
+	-- front of you, then the hitbox opens with them parked there and the ordinary resolution
+	-- path lands the aerial's slam -- no special case needed downstream.
+	if kind == Model.Kind.Aerial then
+		local caught = findGrabTarget(attacker, char, hrp)
+		if caught then
+			RE_Grabbed:FireClient(caught.player, {
+				holder   = char,
+				offset   = MCFG.Aerial.GrabOffset,
+				duration = MCFG.Windup,
 			})
 		end
 	end
