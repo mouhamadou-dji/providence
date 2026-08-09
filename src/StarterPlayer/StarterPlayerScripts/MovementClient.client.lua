@@ -86,6 +86,7 @@ local sprintActive  = false
 local isDashing     = false
 local dashToken     = 0
 local dashCooldownUntil = 0
+local lastDashAt    = 0 -- drives the rusty window; 0 = no dash yet this character
 
 local isSliding      = false
 local slideVec       = Vector3.zero
@@ -255,14 +256,37 @@ end
 
 -- Slope under the character: the angle off vertical, and the horizontal downhill heading.
 -- Downhill is world-down projected onto the surface plane -- the direction a ball would roll.
-local function readSlope()
+-- Slope under the character, AVERAGED over several samples (2026-08-09). A single ray from
+-- the root centre kept missing on bumpy ground and reporting flat, which is why slides died
+-- on real hills. Sampling fore/aft along the direction of travel and averaging the surface
+-- normals both fills those gaps and smooths out individual bumps, so the downhill reading
+-- reflects the hill rather than the pebble currently under you.
+local function readSlope(travelDir)
 	if not hrp or not character then return 0, nil end
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = {character}
-	local hit = workspace:Raycast(hrp.Position, Vector3.new(0, -6, 0), params)
-	if not hit then return 0, nil end
-	local normal = hit.Normal
+
+	local len    = SLIDECFG.RayLength or 8
+	local spread = SLIDECFG.RaySpread or 2
+	local origins = { hrp.Position }
+	local along = travelDir and Model.flatUnit(travelDir)
+	if along then
+		table.insert(origins, hrp.Position + along * spread)
+		table.insert(origins, hrp.Position - along * spread)
+	end
+
+	local sum, hits = Vector3.zero, 0
+	for _, origin in ipairs(origins) do
+		local hit = workspace:Raycast(origin, Vector3.new(0, -len, 0), params)
+		if hit then
+			sum += hit.Normal
+			hits += 1
+		end
+	end
+	if hits == 0 then return 0, nil end
+
+	local normal = (sum.Magnitude > 1e-4) and sum.Unit or Vector3.yAxis
 	local angle = math.deg(math.acos(math.clamp(normal:Dot(Vector3.yAxis), -1, 1)))
 	local down = Vector3.new(0, -1, 0)
 	local downhill = Model.flatUnit(down - normal * down:Dot(normal))
@@ -308,6 +332,10 @@ local slideAirTime = 0
 -- a hill that keeps accelerating you never ages the slide out -- it ends when the hill does.
 local slideAge      = 0
 local slidePrevSpeed = 0
+-- Where the aim pointed last frame. Steering is the FRAME-TO-FRAME DELTA of this, so a
+-- slide holds its entry heading until you actually turn. nil = first frame, nothing to
+-- compare against yet.
+local slideAimPrev  = nil
 
 local function endSlide(preserveMomentum)
 	if not isSliding then return end
@@ -372,6 +400,9 @@ local function startSlide()
 	slideAirTime = 0
 	slideAge = 0
 	slidePrevSpeed = 0 -- 0 so the first frame always reads as "accelerating" (entry burst)
+	-- Seed the steering reference from the aim at entry, so the very first frame measures a
+	-- delta of zero and the slide launches exactly along `dir` instead of snapping.
+	slideAimPrev = (hrp and Model.flatUnit(hrp.CFrame.LookVector)) or nil
 	setOwnFacing(true)
 	-- INSTANT entry: velocity is set outright, never ramped into. No duration -- a slide
 	-- ends when its own physics says so (speed floor, slope, ledge), so the contribution
@@ -401,9 +432,13 @@ local function updateSlide(dt)
 		slideAirTime = 0
 	end
 
-	local angle, downhill = readSlope()
+	-- Sampled along the direction of travel, so the reading describes the hill you are
+	-- actually sliding down rather than the single point under the root.
+	local angle, downhill = readSlope(slideVec)
 	-- Too steep to be a slide any more -- hand it to gravity as a fall, keeping speed.
 	if angle >= (SLIDECFG.MaxSlopeAngle or 60) then endSlide(true); return end
+
+	local onDownhill = false -- set by the grounded branch; read by friction and the clock
 
 	if slideAirTime > 0 then
 		-- Inside the grace window: no ground under you, so neither the slope nor friction can
@@ -418,6 +453,9 @@ local function updateSlide(dt)
 			local accel = (SLIDECFG.SlopeAccelFactor or 60) * math.sin(math.rad(angle)) * downhillAligned * dt
 			slideVec = slideVec + downhill * accel
 		end
+		-- "Genuinely heading down a hill": drives both the friction choice below and whether
+		-- the duration clock is allowed to run at all.
+		onDownhill = downhillAligned >= (SLIDECFG.DownhillNoDragDot or 0.5)
 
 		-- FRICTION ALWAYS -- it is not the `else` of the slope branch. It used to be, which meant
 		-- anything steeper than MinSlopeToSlide had literally zero drag and simply accelerated to
@@ -435,32 +473,43 @@ local function updateSlide(dt)
 		local dir = Model.flatUnit(slideVec)
 		local speed = slideVec.Magnitude
 		local decel = SLIDECFG.FlatFriction or 34
-		if downhillAligned < (SLIDECFG.DownhillNoDragDot or 0.5) then
+		if onDownhill then
+			-- On a hill the surface barely holds you: bleed SlopeFriction instead of the flat
+			-- figure. With FlatFriction the slope only won above ~34.5 degrees, so every
+			-- ordinary hill net-decelerated and the whole mechanic read as broken.
+			decel = SLIDECFG.SlopeFriction or 8
+		else
 			decel += math.max(0, speed - (SLIDECFG.ExcessRefSpeed or 36)) * (SLIDECFG.ExcessDrag or 3)
 		end
 		speed = math.max(0, speed - decel * dt)
 		slideVec = dir and dir * speed or Vector3.zero
 	end
 
-	-- STEERING BY FACING (2026-08-08 pt2). The heading turns toward where the ROOT PART
-	-- points -- so aiming the body (camera under shiftlock, movement input otherwise) aims
-	-- the slide -- capped at SteerRateDeg degrees per second. A rate limit rather than the
-	-- old dt-scaled blend, so the same input steers identically at 30fps and 240fps. Speed
-	-- is preserved through the turn: this rotates momentum, it never adds or removes it.
+	-- STEERING BY TURN DELTA (2026-08-09, dev: "the default direction remains the initial
+	-- direction of the slide -- only if you turn within that moment does the direction
+	-- change"). The slide KEEPS the heading it entered with. Each frame we measure how far
+	-- the aim has rotated SINCE THE LAST FRAME and apply that same rotation to the slide.
+	-- Turn nothing and the slide holds its line forever; turn the camera and it carves by
+	-- exactly what you turned, rate-limited to SteerRateDeg per second.
+	--
+	-- This is why it is a delta and not a target: steering TOWARD the facing (the previous
+	-- implementation) meant any standing offset between body and slide dragged the heading
+	-- around on its own, so the slide never held the line you entered on.
 	local dir = Model.flatUnit(slideVec)
-	local target = (hrp and Model.flatUnit(hrp.CFrame.LookVector)) or readInputDir()
-	if dir and target then
-		local maxStep = (SLIDECFG.SteerRateDeg or 110) * dt
-		local off = Model.angleBetweenDeg(dir, target)
-		local steered
-		if off <= maxStep then
-			steered = target -- close enough to snap; prevents jitter around the target
-		else
-			-- Rotate `dir` toward `target` by exactly maxStep degrees, in the shorter direction.
-			local sign = (dir:Cross(target).Y >= 0) and 1 or -1
-			steered = Model.flatUnit(CFrame.fromAxisAngle(Vector3.yAxis, math.rad(maxStep) * sign) * dir)
+	local aimNow = (hrp and Model.flatUnit(hrp.CFrame.LookVector)) or readInputDir()
+	if dir and aimNow then
+		if slideAimPrev then
+			local turned = Model.angleBetweenDeg(slideAimPrev, aimNow)
+			if turned > 0.01 then
+				local maxStep = (SLIDECFG.SteerRateDeg or 110) * dt
+				local step = math.min(turned, maxStep)
+				local sign = (slideAimPrev:Cross(aimNow).Y >= 0) and 1 or -1
+				local steered = Model.flatUnit(
+					CFrame.fromAxisAngle(Vector3.yAxis, math.rad(step) * sign) * dir)
+				if steered then slideVec = steered * slideVec.Magnitude end
+			end
 		end
-		if steered then slideVec = steered * slideVec.Magnitude end
+		slideAimPrev = aimNow
 	end
 
 	-- slideVec stays flat by construction; the constraint never touches Y, so gravity keeps
@@ -477,10 +526,13 @@ local function updateSlide(dt)
 	-- entry burst, or a hill feeding you) pauses it, so a downhill run lasts as long as the
 	-- hill and a flat slide gets MaxDuration and no more. AccelPauseRate is a small positive
 	-- threshold rather than zero so per-frame physics jitter cannot stall the timer forever.
+	-- Being on a hill pauses it too, not just actively gaining: a long shallow descent can
+	-- sit at terminal speed (slope feed == friction) without technically accelerating, and
+	-- timing out halfway down a hill is exactly the "slide won't keep going" complaint.
 	local nowSpeed = slideVec.Magnitude
 	local gaining = (nowSpeed - slidePrevSpeed) > (SLIDECFG.AccelPauseRate or 1) * dt
 	slidePrevSpeed = nowSpeed
-	if not gaining then slideAge += dt end
+	if not gaining and not onDownhill then slideAge += dt end
 	-- Timing out does NOT chain into the crouch the way sliding to a stop does: you are still
 	-- moving here, and dropping a moving player into a crouch reads as a snag. The handback
 	-- flows the remaining speed into a run instead; Ctrl can be tapped again to re-slide.
@@ -556,6 +608,9 @@ end
 local function startDash()
 	if not hum or not hrp or isDashing then return end
 	if isCrouching then return end
+	-- GROUND ONLY (2026-08-09, dev's call): no air dashing. Refused here for instant local
+	-- feedback and again in MovementSystem.processDash, which owns the authoritative answer.
+	if hum.FloorMaterial == Enum.Material.Air then return end
 	if tick() < dashCooldownUntil then return end -- predicted; server re-checks authoritatively
 	-- DASH CANCELS SLIDE. Dash sits above slide in the priority chain, and cancelling into
 	-- one is a deliberate bit of tech. Momentum is preserved through the handback, so the
@@ -575,7 +630,16 @@ local function startDash()
 	-- standing dodge read as a launch.
 	local speed = dashSpeedFor(flatSpeed()) * (grounded and 1 or (DASHCFG.AirForceMult or 0.7))
 
-	dashCooldownUntil = tick() + (DASHCFG.Cooldown or 0.6)
+	-- RUSTY WINDOW: dashing the moment the cooldown lifts still fires, but shorter. Full
+	-- power only returns Cooldown + RustyWindow after the previous dash, so chain-dashing
+	-- costs reach rather than being refused outright.
+	local now = tick()
+	if lastDashAt > 0 and (now - lastDashAt) < (DASHCFG.Cooldown or 0.5) + (DASHCFG.RustyWindow or 0.5) then
+		speed = speed * (DASHCFG.RustyDistanceMult or 0.75)
+	end
+	lastDashAt = now
+
+	dashCooldownUntil = tick() + (DASHCFG.Cooldown or 0.5)
 	isDashing = true
 	dashToken += 1
 	dashLaunchSpeed = speed
@@ -665,12 +729,17 @@ local function onCtrlDown()
 	local slopeAngle = readSlope()
 	local onSlideSlope = slopeAngle >= (SLIDECFG.SlideSlopeAngle or 35)
 		and slopeAngle < (SLIDECFG.MaxSlopeAngle or 60)
+	-- SLIDE ALWAYS CANCELS DASH (2026-08-09, dev: "sliding after dashing overrides / cancels
+	-- your dash for a slide"). Unconditional -- a dash IS speed by definition, so it never
+	-- has to satisfy the speed or slope test first. endDash hands the momentum back, then
+	-- startSlide converts it; without this the dash's own isDashing guard silently refused
+	-- the slide and the press fell through to a crouch.
+	if isDashing then
+		endDash(dashToken, true)
+		startSlide()
+		if isSliding then return end
+	end
 	if flatSpeed() > threshold or onSlideSlope then
-		-- SLIDE CANCELS DASH, the mirror of startDash's slide cancel: Ctrl mid-dash cuts
-		-- the dash short WITH its momentum handed back (the assembly keeps the dash's
-		-- velocity when the contribution drops), so startSlide converts that speed instead
-		-- of silently refusing on its isDashing guard and dumping you into a crouch.
-		if isDashing then endDash(dashToken, true) end
 		startSlide()
 		if isSliding then return end
 	end
@@ -858,11 +927,12 @@ local function acquire(char)
 	isDashing = false
 	dashToken += 1 -- invalidates any in-flight endDash from the previous character
 	dashCooldownUntil = 0
+	lastDashAt = 0
 	dashLaunchSpeed, dashDir = 0, nil
 	isSliding = false
 	slideVec = Vector3.zero
 	slideAirTime = 0
-	slideAge, slidePrevSpeed = 0, 0
+	slideAge, slidePrevSpeed, slideAimPrev = 0, 0, nil
 	slideCooldownUntil = 0
 	ctrlHeld, ctrlCrouching, crouchPredict, wantSlopeSlide = false, false, false, false
 	isRaging = false

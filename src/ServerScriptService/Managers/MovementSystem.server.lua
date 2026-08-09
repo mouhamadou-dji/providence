@@ -251,6 +251,13 @@ local function processDash(player, dirToken, wasGrounded, claimedSpeed)
 		return denyDash(player, "cooldown", s.dashCooldownUntil - now)
 	end
 
+	-- GROUND ONLY (2026-08-09). The client refuses this too, for instant feedback; this is
+	-- the authoritative half. FloorMaterial is checked server-side rather than trusting the
+	-- client's wasGrounded flag, which a spoofing client would simply lie about.
+	if hum.FloorMaterial == Enum.Material.Air then
+		return denyDash(player, "airborne")
+	end
+
 	local cm = _G.CombatManager
 	if cm and cm.isActionBlocked and cm.isActionBlocked(player) then
 		return denyDash(player, "blocked")

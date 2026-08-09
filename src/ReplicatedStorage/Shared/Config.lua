@@ -238,9 +238,21 @@ Config.Movement = {
 		MaxSpeed      = 73,   -- at full sprint
 		MomentumCurve = 1.5,  -- >1 keeps the low end short; 1 would be a straight lerp
 		Duration      = 0.22, -- distance = speed * Duration, constant at ANY framerate
-		Cooldown      = 0.60, -- scaled by TalentManager.getModifier(p, "DashCooldownMult")
+		Cooldown      = 0.50, -- scaled by TalentManager.getModifier(p, "DashCooldownMult")
 		StaminaCost   = 6,
-		AirForceMult  = 0.70, -- an un-nerfed air dash launches you
+		-- RUSTY WINDOW (2026-08-09). Dashing the instant the cooldown lifts is allowed but
+		-- WEAKER: for RustyWindow seconds past the cooldown, distance is cut to
+		-- RustyDistanceMult. Full power only returns Cooldown + RustyWindow after the last
+		-- dash (0.5 + 0.5 = 1.0s), so chain-dashing costs reach instead of being refused --
+		-- the same "worse, not denied" contract the dodge-stock tiers use.
+		RustyWindow        = 0.50,
+		RustyDistanceMult  = 0.75,
+		-- AIR DASH IS BLOCKED (2026-08-09, dev's call): dash is ground-only now, refused on
+		-- both sides (MovementClient.startDash and MovementSystem.processDash "airborne").
+		-- AirForceMult is therefore dead for players; kept only because MovementSystem's
+		-- displacement budget still multiplies by it when wasGrounded is false, which can no
+		-- longer happen legitimately -- it just makes a spoofed airborne claim stricter.
+		AirForceMult  = 0.70,
 		-- Handback on exit: carry this fraction of THIS DASH'S OWN speed into movement
 		-- momentum, so the character flows out into a run instead of dead-stopping. Against a
 		-- constant it saturated -- every dash, including a standing one, ended at walkPower 1.
@@ -277,6 +289,17 @@ Config.Movement = {
 		-- means crouch. BaseWalkSpeed + 1 so a plain walk never trips it on speed jitter.
 		SlideOverCrouchSpeed = 17,
 		FlatFriction    = 34,   -- studs/s^2 bled on flat ground
+		-- SLOPE FRICTION (2026-08-09, dev: "the slide doesn't keep sliding down the slope,
+		-- it ends up slowing down still"). FlatFriction 34 vs SlopeAccelFactor 60*sin(angle)
+		-- broke even around 34.5 degrees, so every ordinary hill NET DECELERATED and the
+		-- mechanic only worked on cliffs. While genuinely heading downhill the slide now
+		-- bleeds this much instead -- far less than the slope feeds in, so hills carry you.
+		SlopeFriction   = 8,
+		-- Slope sampling: one 6-stud ray from the root centre missed constantly on bumpy
+		-- ground and read flat. Now several rays are averaged along the travel direction,
+		-- which is what makes downhill detection hold together over real terrain.
+		RayLength       = 8,
+		RaySpread       = 2.0,  -- studs fore/aft of centre for the extra samples
 		-- SPEED-CURVED FRICTION (2026-08-08): deceleration scales with how far above the
 		-- reference you are, so a dash-stuffed slide sheds its excess hard and converges
 		-- toward a sprint slide's distance instead of squaring away from it:
