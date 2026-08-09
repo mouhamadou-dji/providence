@@ -115,16 +115,61 @@ end)
 
 -- ── Pure: chain ────────────────────────────────────────────────────────────
 
-test("T10_ChainAdvancesAndCaps", function()
+test("T10_ChainAdvancesThenWrapsToOne", function()
 	local c, n, fin = Model.newChain(), nil, nil
 	for expected = 1, MCFG.ChainMax do
 		c, n, fin = Model.advanceChain(c, expected * 0.1, MCFG)
 		assert(n == expected, ("hit %d expected, got %s"):format(expected, tostring(n)))
 		assert(fin == (expected == MCFG.ChainMax), "finisher flag wrong at hit " .. expected)
 	end
-	-- Past the cap it clamps rather than overflowing the animation array.
-	c, n = Model.advanceChain(c, MCFG.ChainMax * 0.1 + 0.1, MCFG)
-	assert(n == MCFG.ChainMax, "chain must clamp at ChainMax, got " .. tostring(n))
+	-- REGRESSION (2026-08-09). This used to clamp with math.min, so once you reached the
+	-- finisher every further swing repeated it forever and spamming attack never returned
+	-- to hit 1. The chain must start over instead.
+	c, n, fin = Model.advanceChain(c, MCFG.ChainMax * 0.1 + 0.1, MCFG)
+	assert(n == 1, "the swing after the finisher must wrap to hit 1, got " .. tostring(n))
+	assert(not fin, "the wrapped swing is hit 1, not another finisher")
+	-- And it keeps counting normally from there rather than sticking at 1.
+	c, n = Model.advanceChain(c, MCFG.ChainMax * 0.1 + 0.2, MCFG)
+	assert(n == 2, "the chain must continue after wrapping, got " .. tostring(n))
+end)
+
+-- ── Pure: attack kind ──────────────────────────────────────────────────────
+
+test("T10b_AttackKindPrecedence", function()
+	local K = Model.Kind
+	local base = { airborne = false, sprinting = false, uncrouchedAt = nil, now = 100 }
+	assert(Model.attackKind(base, MCFG) == K.Chain, "plain swing is a chain hit")
+
+	local sprint = { airborne = false, sprinting = true, now = 100 }
+	assert(Model.attackKind(sprint, MCFG) == K.Lunge, "sprinting swings lunge")
+
+	local air = { airborne = true, sprinting = true, uncrouchedAt = 100, now = 100 }
+	assert(Model.attackKind(air, MCFG) == K.Aerial, "airborne outranks everything")
+
+	-- A deliberate timed input must not be swallowed by the ambient state you happened to
+	-- be in, so up-tilt beats lunge.
+	local both = { airborne = false, sprinting = true, uncrouchedAt = 100, now = 100.1 }
+	assert(Model.attackKind(both, MCFG) == K.UpTilt, "up-tilt outranks lunge")
+end)
+
+test("T10c_UpTiltWindowBoundaries", function()
+	local K, w = Model.Kind, MCFG.UpTilt.Window
+	local function at(dt) return Model.attackKind({ uncrouchedAt = 100, now = 100 + dt }, MCFG) end
+	assert(at(0) == K.UpTilt, "the instant of release is inside the window")
+	assert(at(w * 0.99) == K.UpTilt, "just inside must up-tilt")
+	assert(at(w) == K.Chain, "exactly at the window length it has expired")
+	assert(at(w + 1) == K.Chain, "past the window is a normal swing")
+end)
+
+test("T10d_ProfilesAndVerticalDirection", function()
+	local K = Model.Kind
+	-- Up is positive, down negative — an up-tilt launches, an aerial slams.
+	assert(Model.profileFor(K.UpTilt, MCFG).vertical > 0, "up-tilt must launch upward")
+	assert(Model.profileFor(K.Aerial, MCFG).vertical < 0, "aerial must drive downward")
+	assert(Model.profileFor(K.Chain, MCFG).vertical == 0, "a chain hit has no vertical")
+	assert(Model.profileFor(K.Lunge, MCFG).damage == MCFG.Lunge.Damage, "lunge uses its own damage")
+	-- An unknown kind must degrade to the base numbers rather than erroring.
+	assert(Model.profileFor("Nonsense", MCFG).damage == MCFG.Damage, "unknown kind falls back")
 end)
 
 test("T11_ChainResetsAfterTheWindow", function()
@@ -160,6 +205,30 @@ test("T13_ConfigIsCoherent", function()
 	assert(MCFG.Windup > MCFG.ReactionGrace, "Windup must exceed ReactionGrace")
 	assert(MCFG.ParryWhiffCooldown > MCFG.ParryCooldown,
 		"whiffing must cost more than landing, or mashing is free")
+	-- Every contextual attack needs a clip index that actually exists in Anims.
+	for _, kind in ipairs({ "Lunge", "Aerial", "UpTilt" }) do
+		local sub = MCFG[kind]
+		assert(sub, "missing Config.Melee." .. kind)
+		local idx = sub.AnimIndex
+		assert(idx and MCFG.Anims[idx],
+			("%s.AnimIndex %s has no clip in Anims"):format(kind, tostring(idx)))
+	end
+	-- The lunge push lasts the windup, so it must not outlive the swing it belongs to.
+	assert(MCFG.Lunge.ForwardForce > 0, "a lunge must actually carry you forward")
+end)
+
+test("T13b_DashIframeCoverage", function()
+	-- Not a failure, but worth surfacing: doubling Dash.Duration to 0.44 means the 0.30s of
+	-- i-frames no longer cover the whole dash, so its tail is punishable. Deliberate — this
+	-- asserts only that the numbers are what we think they are, so a later change to either
+	-- one gets noticed here rather than in a fight.
+	local dash = Config.Movement.Dash
+	local dodge = Config.Movement.Dodge
+	assert(dash.Duration == 0.44, "dash duration should be the doubled 0.44")
+	if dodge.IframeDuration < dash.Duration then
+		print(("[MELEE_TEST] NOTE: dash tail is vulnerable — i-frames %.2fs < dash %.2fs")
+			:format(dodge.IframeDuration, dash.Duration))
+	end
 end)
 
 -- ── Live ───────────────────────────────────────────────────────────────────

@@ -57,15 +57,17 @@ function CombatModel.newChain()
 end
 
 --[[ Advance the chain for a swing at `now`. Returns (newChain, hitNumber, isFinisher).
-     hitNumber is 1..chainMax and indexes the animation array directly. ]]
+     hitNumber is 1..chainMax and indexes the animation array directly.
+
+     WRAPS after the finisher (fixed 2026-08-09). This used to clamp with math.min, so once
+     you reached the last hit every further swing repeated the finisher forever -- spamming
+     attack never returned to hit 1. A chain that has been completed starts over. ]]
 function CombatModel.advanceChain(chain, now, cfg)
 	local chainMax = cfg.ChainMax or 4
-	local count
-	if chain and now <= (chain.windowUntil or 0) then
-		count = math.min((chain.count or 0) + 1, chainMax)
-	else
-		count = 1
-	end
+	-- Only a swing inside the reset window continues anything; outside it the previous
+	-- count is irrelevant and we are starting fresh either way.
+	local prev = (chain and now <= (chain.windowUntil or 0)) and (chain.count or 0) or 0
+	local count = (prev >= chainMax) and 1 or (prev + 1)
 	-- The window is refreshed from THIS swing, so the reset clock measures the gap between
 	-- swings rather than the age of the chain.
 	local newChain = { count = count, windowUntil = now + (cfg.ChainResetTime or 2) }
@@ -76,6 +78,56 @@ end
 function CombatModel.knockbackFor(isFinisher, cfg)
 	if isFinisher then return cfg.KnockbackFinisher or 45 end
 	return cfg.Knockback or 20
+end
+
+-- ── Attack kind ────────────────────────────────────────────────────────────
+CombatModel.Kind = {
+	Chain  = "Chain",
+	Lunge  = "Lunge",
+	Aerial = "Aerial",
+	UpTilt = "UpTilt",
+}
+
+--[[ Which attack a swing becomes, from the attacker's situation.
+
+     ctx = { airborne = bool, sprinting = bool, uncrouchedAt = number?, now = number }
+
+     PRECEDENCE: Aerial > UpTilt > Lunge > Chain.
+       * Airborne wins outright -- you cannot meaningfully lunge or rise off the ground.
+       * UpTilt beats Lunge because it is a deliberate timed input (a 0.4s window after
+         releasing crouch) while sprinting is merely the state you happened to be in;
+         a deliberate input should never be swallowed by an ambient one.
+
+     Only Chain touches the combo counter. The three contextual attacks sit outside it
+     entirely, the same way the old stack's running M1 never touched chainCount. ]]
+function CombatModel.attackKind(ctx, cfg)
+	if not ctx then return CombatModel.Kind.Chain end
+	if ctx.airborne then return CombatModel.Kind.Aerial end
+	local ut = cfg and cfg.UpTilt
+	if ut and ctx.uncrouchedAt and ctx.now then
+		local since = ctx.now - ctx.uncrouchedAt
+		if since >= 0 and since < (ut.Window or 0.4) then
+			return CombatModel.Kind.UpTilt
+		end
+	end
+	if ctx.sprinting then return CombatModel.Kind.Lunge end
+	return CombatModel.Kind.Chain
+end
+
+-- Per-kind tuning, falling back to the base melee numbers so a missing block degrades to a
+-- normal swing rather than erroring.
+function CombatModel.profileFor(kind, cfg)
+	local sub = cfg[kind] -- cfg.Lunge / cfg.Aerial / cfg.UpTilt
+	if kind == CombatModel.Kind.Chain or not sub then
+		return { damage = cfg.Damage or 10, knockback = cfg.Knockback or 20, vertical = 0 }
+	end
+	return {
+		damage    = sub.Damage or cfg.Damage or 10,
+		knockback = sub.Knockback or cfg.Knockback or 20,
+		-- Up is positive, down negative. Aerial slams the victim into the floor; up-tilt
+		-- launches them off it.
+		vertical  = sub.UpForce or (sub.DownForce and -sub.DownForce) or 0,
+	}
 end
 
 -- ── Timing windows ─────────────────────────────────────────────────────────

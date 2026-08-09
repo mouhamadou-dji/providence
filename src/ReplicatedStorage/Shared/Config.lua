@@ -183,6 +183,36 @@ Config.Melee = {
 	BlockSound  = "block",
 	ParrySound  = "Parry_Perfect",
 	ParryWhiffSound = "Parry_Whiff",
+
+	-- ── CONTEXTUAL ATTACKS (2026-08-09) ──────────────────────────────────────
+	-- Three attacks the situation picks for you, resolved by CombatModel.attackKind with
+	-- precedence Aerial > UpTilt > Lunge > Chain. All three are HIGH, and all three sit
+	-- OUTSIDE the 4-hit chain -- they neither advance nor consume it, exactly as the old
+	-- stack's running M1 deliberately never touched chainCount.
+	--
+	-- All use AnimIndex 4 for now (the chain finisher's clip) because no dedicated clips
+	-- exist yet. Authoring them later is a one-number change each.
+
+	-- Sprinting + attack. A committed forward lunge: the push goes through the velocity
+	-- stack as a contribution rather than a raw AssemblyLinearVelocity write, so it sums
+	-- with knockback instead of fighting it.
+	Lunge = {
+		Damage = 12, Knockback = 30, ForwardForce = 25,
+		Cooldown = 0.8, AnimIndex = 4,
+	},
+
+	-- Airborne + attack. Slams the victim down (DownForce is applied as NEGATIVE vertical).
+	Aerial = {
+		Damage = 12, Knockback = 25, DownForce = 20, AnimIndex = 4,
+	},
+
+	-- Release crouch, then attack within Window. Launches the victim upward.
+	-- It is a HIGH attack on purpose: a crouch already threatens a LOW swing, so making the
+	-- rise-out HIGH is what turns crouching into a real mixup instead of something a single
+	-- low guard answers outright.
+	UpTilt = {
+		Window = 0.40, Damage = 10, Knockback = 12, UpForce = 40, AnimIndex = 4,
+	},
 }
 
 -- Real combat animation clip ids, shared by InputHandler (client-predicted player anims)
@@ -320,7 +350,16 @@ Config.Movement = {
 		MinSpeed      = 24,   -- from a dead stop
 		MaxSpeed      = 55,   -- at full sprint
 		MomentumCurve = 1.5,  -- >1 keeps the low end short; 1 would be a straight lerp
-		Duration      = 0.22, -- distance = speed * Duration, constant at ANY framerate
+		-- DOUBLED 2026-08-09 (0.22 -> 0.44). Distance = speed * Duration, so this doubles the
+		-- travel too: ~10.6 studs standing, ~24.2 sprinting. Everything downstream rescales
+		-- itself off this key -- the server displacement guard, the client's endDash timer,
+		-- and MovementController's dash-clip time-scaling.
+		--
+		-- ⚠ Dodge.IframeDuration is 0.30, which USED to cover the whole 0.22s dash. It no
+		-- longer does: the last ~0.14s of a dash is now vulnerable, making the dash a
+		-- commitment with a punishable tail rather than a guaranteed escape. Deliberate --
+		-- raise IframeDuration to 0.44 if that plays badly.
+		Duration      = 0.44, -- distance = speed * Duration, constant at ANY framerate
 		Cooldown      = 0.50, -- scaled by TalentManager.getModifier(p, "DashCooldownMult")
 		StaminaCost   = 6,
 		-- RUSTY WINDOW (2026-08-09). Dashing the instant the cooldown lifts is allowed but

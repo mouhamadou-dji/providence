@@ -85,6 +85,10 @@ local function initState(userId)
 		hitLockUntil   = 0,
 		combatState    = "Idle",
 		cooldowns      = {},
+		-- When crouch was last RELEASED. Attacking inside Config.Melee.UpTilt.Window of this
+		-- turns the swing into an up-tilt. Stamped from the CrouchActive attribute, which
+		-- MovementManager writes server-side (so it replicates and a client cannot fake it).
+		uncrouchedAt   = nil,
 	}
 end
 
@@ -122,6 +126,25 @@ function PlayerSwung:Connect(fn) return swungBindable.Event:Connect(fn) end
 -- ── Level derivation (SERVER TRUTH) ───────────────────────────────────────
 -- MoveState is a client attribute and never replicates, so it is unusable here. CrouchActive
 -- is written by MovementManager on the server and does replicate; isSliding is server state.
+--[[ Watch crouch release so an up-tilt has something to key off.
+
+     CrouchActive is written by MovementManager on the SERVER, so unlike MoveState it
+     replicates and is not client-authored -- which is exactly why the up-tilt window keys
+     off it rather than off anything the client says. SlideActive gets the same treatment:
+     standing up out of a slide is the same gesture. ]]
+local function watchStanceRelease(player, char)
+	local function onRelease()
+		local s = getPS(player)
+		if s then s.uncrouchedAt = os.clock() end
+	end
+	char:GetAttributeChangedSignal("CrouchActive"):Connect(function()
+		if char:GetAttribute("CrouchActive") == false then onRelease() end
+	end)
+	char:GetAttributeChangedSignal("SlideActive"):Connect(function()
+		if char:GetAttribute("SlideActive") == false then onRelease() end
+	end)
+end
+
 local function levelFor(player)
 	local char = player and player.Character
 	if char and char:GetAttribute("CrouchActive") == true then return Level.Low end
@@ -317,7 +340,18 @@ local function hasLineOfSight(attackerChar, fromPos, victimChar, toPos)
 end
 
 -- ── Resolution ────────────────────────────────────────────────────────────
-local function applyOutcome(outcome, attacker, attackerChar, victimChar, victimPlayer, hum, hitNum, isFinisher, level)
+--[[ `atk` describes the swing once, so it can be threaded through resolution without a
+     growing tail of positional arguments:
+        { attacker, char, hitNum, isFinisher, level, kind }
+     It is built once per swing in processSwing and never mutated afterwards, which also
+     means a swing's level cannot change out from under a deferred resolution. ]]
+local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
+	local attacker     = atk.attacker
+	local attackerChar = atk.char
+	local hitNum       = atk.hitNum
+	local isFinisher   = atk.isFinisher
+	local level        = atk.level
+	local kind         = atk.kind
 	if not hum or hum.Health <= 0 then return end
 	local vHRP = victimChar:FindFirstChild("HumanoidRootPart")
 
@@ -355,15 +389,38 @@ local function applyOutcome(outcome, attacker, attackerChar, victimChar, victimP
 	-- HIT. Damage goes through CombatCore's funnel, which owns godmode, meditation immunity,
 	-- the i-frame gate, damage history and the combat tag. Never reimplemented here.
 	local cm = _G.CombatManager
-	local damage = MCFG.Damage
+	local profile = Model.profileFor(kind, MCFG)
+	-- The chain's finisher bonus applies to chain hits only; the contextual attacks carry
+	-- their own flat figures.
+	local knockForce = (kind == Model.Kind.Chain)
+		and Model.knockbackFor(isFinisher, MCFG) or profile.knockback
+
 	if cm and cm.applyDamage then
-		cm.applyDamage(hum, damage, victimPlayer, "Player")
+		cm.applyDamage(hum, profile.damage, victimPlayer, "Player")
 	else
-		hum:TakeDamage(damage)
+		hum:TakeDamage(profile.damage)
 	end
 
 	if cm and cm.applyKnockback then
-		pcall(cm.applyKnockback, attackerChar, victimChar, Model.knockbackFor(isFinisher, MCFG))
+		local ok, spec = pcall(cm.applyKnockback, attackerChar, victimChar, knockForce)
+		-- VERTICAL. applyKnockback only builds a planar shove, so an up-tilt's launch and an
+		-- aerial's slam ride along as a SECOND contribution -- contributions vector-sum, so
+		-- the two combine rather than one replacing the other.
+		--
+		-- Gating on a non-nil spec is doing real work: applyKnockback returns nil precisely
+		-- when the victim was rage-immune or immovable, so this inherits all of its immunity,
+		-- KnockbackResist and talent handling instead of duplicating (and drifting from) it.
+		if ok and spec and profile.vertical ~= 0 then
+			local vm = _G.VelocityManager
+			if vm and vm.push then
+				pcall(vm.push, victimChar, {
+					planar   = Vector3.zero, -- required field; the horizontal already landed above
+					vertical = profile.vertical,
+					duration = 0.25,
+					decay    = "linear",
+				})
+			end
+		end
 	end
 
 	local vs = getPS(victimPlayer)
@@ -381,7 +438,8 @@ local function applyOutcome(outcome, attacker, attackerChar, victimChar, victimP
 	fireEvent(attacker,     { kind = "Hit", level = level, hit = hitNum, victimName = victimPlayer.Name })
 end
 
-local function resolveAgainst(attacker, attackerChar, victimChar, victimPlayer, hum, hitNum, isFinisher, level)
+local function resolveAgainst(atk, victimChar, victimPlayer, hum)
+	local level = atk.level
 	-- i-frames (dash/dodge) beat everything, and short-circuit before the grace window so a
 	-- dodged swing costs the defender no stamina and no parry.
 	local cm = _G.CombatManager
@@ -391,7 +449,7 @@ local function resolveAgainst(attacker, attackerChar, victimChar, victimPlayer, 
 	local outcome = Model.resolve(level, defenceOf(victimPlayer), now, MCFG)
 
 	if not Model.shouldDefer(outcome) then
-		applyOutcome(outcome, attacker, attackerChar, victimChar, victimPlayer, hum, hitNum, isFinisher, level)
+		applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 		return
 	end
 
@@ -401,7 +459,7 @@ local function resolveAgainst(attacker, attackerChar, victimChar, victimPlayer, 
 		if not victimChar.Parent or hum.Health <= 0 then return end
 		if victimPlayer and cm and cm.hasIframes and cm.hasIframes(victimPlayer) then return end
 		local late = Model.resolve(level, defenceOf(victimPlayer), os.clock(), MCFG)
-		applyOutcome(late, attacker, attackerChar, victimChar, victimPlayer, hum, hitNum, isFinisher, level)
+		applyOutcome(late, atk, victimChar, victimPlayer, hum)
 	end)
 end
 
@@ -421,24 +479,74 @@ local function processSwing(attacker)
 	local char, hum, hrp = charParts(attacker)
 	if not char or not hum or not hrp or hum.Health <= 0 then return end
 
-	local level = levelFor(attacker)
-	local chain, hitNum, isFinisher = Model.advanceChain(s.chain, now, MCFG)
-	s.chain = chain
+	-- WHICH ATTACK THIS IS. Every input is the same click; the situation decides. All three
+	-- contextual attacks are HIGH -- only the chain reads stance for its level.
+	local ms = _G.MovementSystem
+	local kind = Model.attackKind({
+		airborne     = hum.FloorMaterial == Enum.Material.Air,
+		sprinting    = ms and ms.isSprinting and ms.isSprinting(attacker) or false,
+		uncrouchedAt = s.uncrouchedAt,
+		now          = now,
+	}, MCFG)
+
+	local level = (kind == Model.Kind.Chain) and levelFor(attacker) or Level.High
+
+	local hitNum, isFinisher
+	if kind == Model.Kind.Chain then
+		local chain
+		chain, hitNum, isFinisher = Model.advanceChain(s.chain, now, MCFG)
+		s.chain = chain
+	else
+		-- Contextual attacks sit OUTSIDE the chain: they neither advance nor reset it, so a
+		-- lunge mid-combo does not cost you your place. Their clip is named directly.
+		hitNum = (MCFG[kind] and MCFG[kind].AnimIndex) or MCFG.ChainMax
+		isFinisher = false
+	end
+
+	-- An up-tilt consumes its window, so one crouch-release buys exactly one up-tilt rather
+	-- than every swing for the next 0.4s.
+	if kind == Model.Kind.UpTilt then s.uncrouchedAt = nil end
+
 	s.lastSwingAt = now
 	s.swingToken += 1
 	local myToken = s.swingToken
 
 	setCombatState(attacker, "Attacking")
-	setSpeed(attacker, MCFG.AttackSpeedMult)
 	swungBindable:Fire(attacker) -- WolfManager read-parry hook
+
+	-- LUNGE carries you forward. Pushed as a velocity CONTRIBUTION rather than a raw
+	-- AssemblyLinearVelocity write (which the old stack used and which a client-owned
+	-- character overwrites on the next replication tick anyway), so it sums with any
+	-- knockback landing at the same moment instead of one clobbering the other.
+	if kind == Model.Kind.Lunge then
+		if ms and ms.stopSprint then ms.stopSprint(attacker) end
+		local vm = _G.VelocityManager
+		local dir = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
+		if vm and vm.pushPlayer and dir.Magnitude > 0.01 then
+			pcall(vm.pushPlayer, attacker, {
+				planar   = dir.Unit * (MCFG.Lunge.ForwardForce or 25),
+				duration = MCFG.Windup,
+				decay    = "linear",
+				suppressInput = false, -- you keep steering through a lunge; it is not a dash
+			})
+		end
+	end
 
 	local swingSounds = MCFG.SwingSounds or {}
 	if #swingSounds > 0 then
 		playSound3D(hrp, swingSounds[math.random(1, #swingSounds)], 0.2)
 	end
-	-- The client plays the clip; the level travels with it so a low swing can animate
-	-- differently once low clips are authored.
-	fireEvent(attacker, { kind = "Swing", hit = hitNum, level = level, finisher = isFinisher })
+	-- The client plays whatever clip index we name, so the contextual attacks need no client
+	-- change at all -- they just ask for clip 4.
+	fireEvent(attacker, {
+		kind = "Swing", hit = hitNum, level = level,
+		finisher = isFinisher, attack = kind,
+	})
+
+	local atk = {
+		attacker = attacker, char = char,
+		hitNum = hitNum, isFinisher = isFinisher, level = level, kind = kind,
+	}
 
 	task.spawn(function()
 		-- WINDUP: the telegraph. No hitbox exists yet -- this is the window a defender reads
@@ -448,6 +556,12 @@ local function processSwing(attacker)
 		if not cur or cur.swingToken ~= myToken then return end -- staggered, hit, or superseded
 		local aChar, aHum, aHRP = charParts(attacker)
 		if not aChar or not aHum or not aHRP or aHum.Health <= 0 then return end
+
+		-- THE COMMITMENT STARTS HERE, not at the click (moved 2026-08-09). Slowing during the
+		-- windup punished you for the telegraph itself; now the wind-up leaves you mobile and
+		-- the speed cost lands exactly when the hitbox does. A swing cancelled by a stagger
+		-- during its windup therefore never pays the penalty at all.
+		setSpeed(attacker, MCFG.AttackSpeedMult)
 
 		-- ACTIVE FRAMES. Polled every frame across the window rather than sampled once: a
 		-- single instant either whiffs or lands purely on where both fighters happened to be
@@ -470,7 +584,7 @@ local function processSwing(attacker)
 						and hasLineOfSight(aChar2, aHRP2.Position, vc, vHRP.Position) then
 						seen[vc] = true
 						local vp = Players:GetPlayerFromCharacter(vc)
-						resolveAgainst(attacker, aChar2, vc, vp, vHum, hitNum, isFinisher, level)
+						resolveAgainst(atk, vc, vp, vHum)
 					end
 				end
 			end
@@ -498,17 +612,18 @@ RE_Parry.OnServerEvent:Connect(function(p) startParry(p) end)
 -- Reset on every SPAWN, not just on join. The old stack needed this same fix in five
 -- separate managers: dying mid-parry-window or mid-guard otherwise left the fresh character
 -- permanently unable to parry, or silently guarding nothing.
+local function onCharacter(player, char)
+	initState(player.UserId)
+	setCombatState(player, "Idle")
+	watchStanceRelease(player, char)
+end
+
 Players.PlayerAdded:Connect(function(player)
-	player.CharacterAdded:Connect(function()
-		initState(player.UserId)
-		setCombatState(player, "Idle")
-	end)
+	player.CharacterAdded:Connect(function(char) onCharacter(player, char) end)
 end)
 for _, p in ipairs(Players:GetPlayers()) do
-	p.CharacterAdded:Connect(function()
-		initState(p.UserId)
-		setCombatState(p, "Idle")
-	end)
+	p.CharacterAdded:Connect(function(char) onCharacter(p, char) end)
+	if p.Character then onCharacter(p, p.Character) end
 end
 
 -- ── Registration ──────────────────────────────────────────────────────────
