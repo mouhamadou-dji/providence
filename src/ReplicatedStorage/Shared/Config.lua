@@ -227,15 +227,22 @@ Config.Movement = {
 	--
 	--   speed = MinSpeed + (MaxSpeed - MinSpeed) * (flatSpeed / SprintSpeed) ^ MomentumCurve
 	--
-	-- standstill -> 32 x 0.22 = ~7.0 studs   (a dodge step)
-	-- walking    -> 52 x 0.22 = ~11.4 studs
-	-- sprinting  -> 73 x 0.22 = ~16.1 studs  (a committed lunge)
+	-- CUT 25% ACROSS THE BOARD 2026-08-09 (dev: "reduce the base dash distance by 25%").
+	-- Both ends of the curve were scaled by 0.75, so the shape is untouched and every dash
+	-- -- standing, walking, sprinting -- is simply a quarter shorter:
 	--
-	-- The exponent is what pulls walk down to ~11: a linear map would put it at ~12.6,
-	-- because walk is already 62% of sprint speed.
+	-- standstill -> 24 x 0.22 = ~5.3 studs   (a dodge step)
+	-- walking    -> 39 x 0.22 = ~8.6 studs
+	-- sprinting  -> 55 x 0.22 = ~12.1 studs  (a committed lunge)
+	--
+	-- The exponent is what pulls walk down: a linear map would put it higher, because walk
+	-- is already 62% of sprint speed.
+	--
+	-- MovementSystem.dashSpeedFor mirrors these same Config numbers, so the server's
+	-- displacement guard rescales with them automatically -- no second edit needed.
 	Dash = {
-		MinSpeed      = 32,   -- from a dead stop
-		MaxSpeed      = 73,   -- at full sprint
+		MinSpeed      = 24,   -- from a dead stop
+		MaxSpeed      = 55,   -- at full sprint
 		MomentumCurve = 1.5,  -- >1 keeps the low end short; 1 would be a straight lerp
 		Duration      = 0.22, -- distance = speed * Duration, constant at ANY framerate
 		Cooldown      = 0.50, -- scaled by TalentManager.getModifier(p, "DashCooldownMult")
@@ -338,12 +345,15 @@ Config.Movement = {
 		-- points, at up to SteerRateDeg degrees per second -- a real rate limit rather than
 		-- the old dt-scaled blend, so it behaves the same at any framerate. Speed is
 		-- preserved through the turn; only the direction changes.
-		-- 110 -> 220 (2026-08-09, dev: "make the turnability 2x stronger"). This is a rate
-		-- CEILING, not an amount added: it caps how fast the slide may rotate to follow your
-		-- aim, so raising it only matters when you turn faster than the old limit allowed.
-		-- Gentle turns are unchanged; hard ones now keep up with the camera instead of
-		-- lagging behind it.
-		SteerRateDeg    = 220,
+		-- 110 -> 1100 (2026-08-09, dev: "10x, I can visibly see myself turning, basically
+		-- almost full control"). This is a rate CEILING on how fast the slide may rotate to
+		-- follow your aim. At 1100 deg/sec it is effectively uncapped for any real mouse
+		-- movement, which makes steering 1:1 with the camera -- turn 90 degrees, the slide
+		-- turns 90 degrees. That 1:1 is the natural maximum of delta steering: the slide can
+		-- never rotate MORE than you rotated. Raising this further changes nothing; if the
+		-- slide ever needs to out-turn the camera that is amplified steering, a different
+		-- mechanic (multiply the delta rather than clamp it).
+		SteerRateDeg    = 1100,
 		-- DURATION (2026-08-08 pt2, dev: "decrease the sliding duration in half however the
 		-- duration increases depending on whether you're accelerating"). The clock only runs
 		-- while the slide is NOT gaining speed, so a downhill run that keeps accelerating
