@@ -30,6 +30,22 @@ end
 -- ServerStorage._OldCombat_2026_08_02.Remotes. They MUST stay out of this file --
 -- getOrCreate would resurrect them as orphan instances that nothing listens to.
 -- The new combat system declares its own remotes here when it lands.
+--
+-- MELEE (level-based combat, 2026-08-09) -- it landed. These are FRESH instances under
+-- deliberately NEW names: the old RequestM1/RequestParry/RequestBlock/OnHit/OnParryResult/
+-- PlayCombatAnim names stay retired on purpose. NPCManager, ShroomManager and WolfManager
+-- still do runtime FindFirstChild lookups for four of those old names and fire them when
+-- present, so reusing the names would silently wire mob code to a payload shape it was
+-- never written for. When mob combat is rebuilt it opts in explicitly.
+--
+-- Every client -> server melee remote takes NO PAYLOAD. The server derives the target, the
+-- attack LEVEL (from its own crouch/slide state, never the client's), the timing and the
+-- damage. There is nothing in these calls for a client to lie about.
+RemoteEvents.RequestSwing    = getOrCreate("RequestSwing")    -- client -> server: (no payload) swing M1
+RemoteEvents.RequestGuard    = getOrCreate("RequestGuard")    -- client -> server: (no payload) begin guarding
+RemoteEvents.RequestGuardEnd = getOrCreate("RequestGuardEnd") -- client -> server: (no payload) stop guarding
+RemoteEvents.RequestParry    = getOrCreate("RequestParry")    -- client -> server: (no payload) tap parry
+RemoteEvents.OnMeleeEvent    = getOrCreate("OnMeleeEvent")    -- server -> client: {kind="Swing"|"Hit"|"Blocked"|"Parried"|"ParryWhiff"|"Staggered"|"Denied", level?, hit?, reason?, attackerName?, victimName?}
 
 -- MOVEMENT -- stack removed 2026-08-04 (full revamp). RequestDash, RequestSprint,
 -- RequestSprintEnd, RequestSlide and RequestJump were deleted with it, along with the

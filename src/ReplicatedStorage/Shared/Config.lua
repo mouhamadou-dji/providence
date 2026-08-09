@@ -109,6 +109,82 @@ Config.Combat = {
 	SprintLockDuration = 1.5,     -- seconds of no-sprint after landing OR receiving a hit (refreshed on every hit) -- stops a fight being escaped by just holding W+Shift mid-exchange
 }
 
+-- ─── MELEE (level-based combat, 2026-08-09) ───────────────────────────────────
+-- The live combat system. Config.Combat above is the TORN-DOWN stack's tuning: most of it
+-- is dead, but a few keys are still read by surviving code (KnockbackForce by
+-- VelocityManager.applyKnockback's fallback, CombatTagDuration by StaminaManager,
+-- MobKnockbackResist by the mob knockback path), so it stays put rather than being
+-- rewritten. Everything the new system owns lives HERE, under its own name, and nothing
+-- reads across.
+--
+-- THE MECHANIC: attacking from a crouch or a slide is a LOW attack, anything else is HIGH.
+-- Guard and parry carry a level from the same stance, and only stop an attack whose level
+-- MATCHES. Guard high against a low sweep and it lands.
+Config.Melee = {
+	Damage    = 10,
+	ChainMax  = 4,    -- hits in a full chain; also the length of the Anims array
+	ChainResetTime = 2.0, -- seconds of no swing before the chain returns to hit 1
+	SwingCooldown  = 0.5, -- the chain's rhythm. Clicking faster never swings faster.
+
+	-- TELEGRAPH. The hitbox does not exist during this -- it is the window in which a
+	-- defender reads the level and commits. The old stack ended up at 32 frames (0.53s)
+	-- after four separate bumps, all in the same direction, because the hitbox kept
+	-- arriving before anyone could react; 0.3 is the dev's figure and is deliberately
+	-- shorter, so expect this to be the first number retuned once the animations are in.
+	Windup = 0.30,
+
+	-- ACTIVE FRAMES, not one instant. The hitbox is polled every frame across this window
+	-- and a victim can only be caught once per swing. The archived system recorded that a
+	-- single-frame check "read as 'the hitbox is behind me'" whenever either fighter kept
+	-- moving mid-swing -- this window is that bug's fix, kept.
+	ActiveWindow = 0.12,
+
+	-- Box swept from the attacker's root. Reach = offset.Z + size.Z/2 = 5.5 studs.
+	HitboxSize   = Vector3.new(5, 5, 5),
+	HitboxOffset = Vector3.new(0, 0, -3),
+	MaxHitParts  = 24,   -- overlap query cap; one character returns many parts
+	RequireLineOfSight = true, -- raycast attacker -> victim before damage. The old system
+	                           -- had no such check and happily hit through walls.
+
+	-- REACTION GRACE. When the hitbox catches someone, the hit is not resolved immediately:
+	-- it is held for this long and re-checked, so a guard or parry that STARTS inside the
+	-- window still counts. Doubles as ping forgiveness. Measured entirely server-side, so a
+	-- client cannot claim it reacted when it did not.
+	ReactionGrace = 0.05,
+
+	ParryWindow        = 0.20, -- how long a parry stays live after the tap
+	ParryCooldown      = 1.00, -- after a parry that intercepted something
+	ParryWhiffCooldown = 2.00, -- harsher, so mashing costs more than reading (old stack's lesson)
+	ParryStagger       = 0.80, -- seconds the ATTACKER is staggered by a successful parry
+
+	GuardStaminaPerHit = 8,    -- drained per hit absorbed at the correct level
+	GuardSpeedMult     = 0.40, -- movement multiplier while guarding (via CombatCore.setSpeed)
+	AttackSpeedMult    = 0.25, -- movement multiplier while swinging
+	StaggerSpeedMult   = 0.30,
+
+	Knockback          = 20,   -- hits 1..ChainMax-1
+	KnockbackFinisher  = 45,   -- the chain ender hits noticeably harder
+
+	HitLockout = 0.30, -- seconds a victim cannot attack after being hit (chain also resets)
+
+	-- The four M1 clips, indexed by chain hit. Ids rather than _Animations instances because
+	-- these were supplied directly and no matching instances exist under _Animations.Combat
+	-- (which still holds the OLD five-clip M1_Swing set).
+	Anims = {
+		"rbxassetid://86936325354351",
+		"rbxassetid://104104278989492",
+		"rbxassetid://135905484534070",
+		"rbxassetid://119997146773035",
+	},
+
+	-- _Sounds.Combat entries, looked up by name. Hit sounds are indexed by chain hit.
+	SwingSounds = { "M1_Swing_1", "M1_Swing_2", "M1_Swing_3" },
+	HitSounds   = { "M1_Hit1", "M1_Hit2", "M1_Hit3", "M1_Hit4" },
+	BlockSound  = "block",
+	ParrySound  = "Parry_Perfect",
+	ParryWhiffSound = "Parry_Whiff",
+}
+
 -- Real combat animation clip ids, shared by InputHandler (client-predicted player anims)
 -- and NPCManager (server-driven NPC anims, since NPCs have no client to predict on) so
 -- the two can never drift apart the way the client-side mirrored-constant bugs did before
