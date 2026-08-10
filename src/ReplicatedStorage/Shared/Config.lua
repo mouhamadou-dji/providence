@@ -124,20 +124,29 @@ Config.Melee = {
 	Damage    = 10,
 	ChainMax  = 4,    -- hits in a full chain; also the length of the Anims array
 	ChainResetTime = 2.0, -- seconds of no swing before the chain returns to hit 1
-	SwingCooldown  = 0.5, -- the chain's rhythm. Clicking faster never swings faster.
+	-- Raised alongside the swing below (0.5 / 0.7). A swing is now Windup + ActiveWindow =
+	-- 0.60s long, so leaving the cooldown at 0.5 would let the next swing start while the
+	-- previous hitbox was still open -- the new swing's token would silently kill the old
+	-- one mid-flight.
+	SwingCooldown  = 0.71, -- the chain's rhythm. Clicking faster never swings faster.
 
 	-- TELEGRAPH. The hitbox does not exist during this -- it is the window in which a
 	-- defender reads the level and commits. The old stack ended up at 32 frames (0.53s)
-	-- after four separate bumps, all in the same direction, because the hitbox kept
-	-- arriving before anyone could react; 0.3 is the dev's figure and is deliberately
-	-- shorter, so expect this to be the first number retuned once the animations are in.
-	Windup = 0.30,
+	-- after four separate bumps, all in the same direction, because the hitbox kept arriving
+	-- before anyone could react.
+	--
+	-- SLOWED 2026-08-10 (dev: "hard to react"): both this and ActiveWindow are divided by
+	-- 0.7, stretching the whole swing to ~1.43x its old length. The ANIMATION follows
+	-- automatically -- CombatClient time-scales each clip to Windup + ActiveWindow, so a
+	-- longer swing plays the same clip at 0.7x speed with no separate multiplier to keep in
+	-- sync. Landing at 0.43 also puts this within sight of the old stack's hard-won 0.53.
+	Windup = 0.43,
 
 	-- ACTIVE FRAMES, not one instant. The hitbox is polled every frame across this window
 	-- and a victim can only be caught once per swing. The archived system recorded that a
 	-- single-frame check "read as 'the hitbox is behind me'" whenever either fighter kept
 	-- moving mid-swing -- this window is that bug's fix, kept.
-	ActiveWindow = 0.12,
+	ActiveWindow = 0.17,
 
 	-- Box swept from the attacker's root. Reach = offset.Z + size.Z/2 = 5.5 studs.
 	HitboxSize   = Vector3.new(5, 5, 5),
@@ -165,13 +174,24 @@ Config.Melee = {
 
 	GuardStaminaPerHit = 8,    -- drained per hit absorbed at the correct level
 	GuardSpeedMult     = 0.40, -- movement multiplier while guarding (via CombatCore.setSpeed)
-	AttackSpeedMult    = 0.25, -- movement multiplier while swinging
+	-- The WINDUP is a small speed BOOST, not a penalty: committing to a swing steps you into
+	-- it. 1.125 x BaseWalkSpeed 16 = 18, i.e. the +2 studs/s the dev asked for. It has to be
+	-- a multiplier rather than a flat add because CombatCore.setSpeed composes this with the
+	-- health / injury / rage / caste chain -- a wounded player gets +2 relative to THEIR
+	-- ceiling, not a flat bonus that would partly undo the injury.
+	WindupSpeedMult    = 1.125,
+	AttackSpeedMult    = 0.25, -- movement multiplier once the hitbox opens -- the commitment
 	StaggerSpeedMult   = 0.30,
 
 	Knockback          = 20,   -- hits 1..ChainMax-1
 	KnockbackFinisher  = 45,   -- the chain ender hits noticeably harder
 
-	HitLockout = 0.30, -- seconds a victim cannot attack after being hit (chain also resets)
+	-- STUN ON BEING HIT. 0.30 -> 0.70 (2026-08-10, dev's figure). Seconds a victim cannot
+	-- attack after taking a hit; their chain resets and any in-flight swing is invalidated
+	-- too. It deliberately does NOT gate movement -- CombatSystem.isActionBlocked answers
+	-- only on stagger, because crouch is a toggle and refusing it mid-hitstun ate the
+	-- release and left players stuck crouched.
+	HitLockout = 0.70,
 
 	-- The four M1 clips, indexed by chain hit. Ids rather than _Animations instances because
 	-- these were supplied directly and no matching instances exist under _Animations.Combat

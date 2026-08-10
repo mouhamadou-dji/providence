@@ -216,6 +216,16 @@ test("T13_ConfigIsCoherent", function()
 	-- The windup is the entire telegraph; if it is shorter than the reaction grace the
 	-- defender is being asked to react to something they cannot have seen.
 	assert(MCFG.Windup > MCFG.ReactionGrace, "Windup must exceed ReactionGrace")
+	-- A swing must FIT inside its own cooldown. If the next swing can start while the
+	-- previous hitbox is still open, the new swing's token silently kills the old one
+	-- mid-flight -- so its active frames simply stop existing partway through.
+	assert(MCFG.SwingCooldown >= MCFG.Windup + MCFG.ActiveWindow,
+		("SwingCooldown %.2f must cover Windup + ActiveWindow (%.2f)")
+			:format(MCFG.SwingCooldown, MCFG.Windup + MCFG.ActiveWindow))
+	-- The windup is a boost and the active frames are the commitment; if that inverted, the
+	-- telegraph would punish you and the hit would reward you.
+	assert((MCFG.WindupSpeedMult or 1) > MCFG.AttackSpeedMult,
+		"the windup must be faster than the swing, not slower")
 	assert(MCFG.ParryWhiffCooldown > MCFG.ParryCooldown,
 		"whiffing must cost more than landing, or mashing is free")
 	-- Every contextual attack needs a clip index that actually exists in Anims.

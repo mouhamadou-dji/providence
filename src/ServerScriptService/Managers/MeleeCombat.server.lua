@@ -249,12 +249,22 @@ local function isBusy(s, now)
 	return false
 end
 
+--[[ The EXTERNAL seam, and deliberately NARROWER than isBusy.
+
+     isBusy answers "can this player start an attack" -- staggered or inside the hit lockout
+     both say no. This one answers "is this player incapacitated", because it gates things
+     that have nothing to do with attacking.
+
+     MovementManager.processCrouch is the one that bit us: crouch is a TOGGLE, so refusing it
+     during hitstun ate the RELEASE and left the player stuck crouched until they pressed and
+     released again. Being briefly unable to swing must not mean being unable to stand up, so
+     only a real stagger blocks here. ]]
 local function isActionBlocked(player)
 	local s = getPS(player)
 	if not s then return true end
 	local _, hum = charParts(player)
 	if not hum or hum.Health <= 0 then return true end
-	return isBusy(s, os.clock())
+	return os.clock() < s.staggeredUntil
 end
 
 -- ── Stagger ───────────────────────────────────────────────────────────────
@@ -490,7 +500,14 @@ local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 		-- trading blindly loses to landing first.
 		vs.swingToken += 1
 		vs.chain = Model.newChain()
-		vs.hitLockUntil = math.max(vs.hitLockUntil, os.clock() + (MCFG.HitLockout or 0.3))
+		vs.hitLockUntil = math.max(vs.hitLockUntil, os.clock() + (MCFG.HitLockout or 0.7))
+		-- That invalidated swing will bail out of its own coroutine without reaching the
+		-- restore at the end, so its speed change is ours to undo. Without this a victim
+		-- interrupted mid-windup keeps the windup speed boost indefinitely.
+		if vs.combatState == "Attacking" then
+			setCombatState(victimPlayer, vs.guarding and "Blocking" or "Idle")
+		end
+		setSpeed(victimPlayer, vs.guarding and MCFG.GuardSpeedMult or 1)
 	end
 
 	-- KILL ATTRIBUTION. Humanoid.Died carries no notion of who did it, so the damage source
@@ -541,6 +558,13 @@ local function processSwing(attacker)
 		fireEvent(attacker, { kind = "Denied", reason = "busy" })
 		return
 	end
+	-- GUARD AND ATTACK ARE EXCLUSIVE. Swinging out of a raised guard let you hold the
+	-- defensive option and the offensive one at once, which costs nothing and beats reading
+	-- the level. Drop guard first.
+	if s.guarding then
+		fireEvent(attacker, { kind = "Denied", reason = "guarding" })
+		return
+	end
 	-- The rhythm IS the rate limit: clicking faster than SwingCooldown never swings faster.
 	if not checkRateLimit(s, "Swing", MCFG.SwingCooldown) then return end
 
@@ -580,6 +604,11 @@ local function processSwing(attacker)
 	local myToken = s.swingToken
 
 	setCombatState(attacker, "Attacking")
+	-- WINDUP CARRIES YOU FORWARD. The telegraph is now a small speed BOOST rather than
+	-- neutral, so committing to a swing steps you into it; the slow lands when the hitbox
+	-- opens (see below). Expressed as a multiplier because CombatCore.setSpeed composes with
+	-- the health/injury/rage/caste chain -- see the note on WindupSpeedMult in Config.
+	setSpeed(attacker, MCFG.WindupSpeedMult or 1)
 	swungBindable:Fire(attacker) -- WolfManager read-parry hook
 
 	-- LUNGE AND AERIAL both carry you forward. Pushed as a velocity CONTRIBUTION rather than a
