@@ -199,7 +199,11 @@ Config.Melee = {
 	-- health / injury / rage / caste chain -- a wounded player gets +2 relative to THEIR
 	-- ceiling, not a flat bonus that would partly undo the injury.
 	WindupSpeedMult    = 1.125,
-	AttackSpeedMult    = 0.25, -- movement multiplier once the hitbox opens -- the commitment
+	-- AttackSpeedMult (0.25 while the hitbox was open) was REMOVED 2026-08-10 -- dev: the
+	-- swing phase should not slow you. The windup keeps its boost and the attack then stops
+	-- having an opinion about movement at all, so the swing falls through to whatever else is
+	-- live. Deleted rather than set to 1: a 1.0 setter still WINS its weight, which would have
+	-- overridden crouch and let you swing at full speed while crouched.
 	StaggerSpeedMult   = 0.30,
 
 	Knockback          = 20,   -- hits 1..ChainMax-1

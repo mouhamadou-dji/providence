@@ -186,8 +186,10 @@ local function flowClear(player, name)
 	if mf then mf.clear(player, name) end
 end
 
--- Every key this system can own. Clearing all of them is the "I am no longer doing anything
--- to your speed" statement, used by the swing's cleanup path.
+-- Every key a swing can own. Only "Windup" is registered today -- the swing phase itself
+-- deliberately owns no speed source since 2026-08-10 -- but "Attack" stays in the sweep so a
+-- future attack that DOES want one cannot leak it by forgetting to update this list.
+-- Clearing an unregistered key is a no-op, so the insurance is free.
 local SWING_KEYS = { "Windup", "Attack" }
 
 local function clearSwingSpeed(player)
@@ -725,13 +727,18 @@ local function processSwing(attacker)
 			local aChar, aHum, aHRP = charParts(attacker)
 			if not aChar or not aHum or not aHRP or aHum.Health <= 0 then return end
 
-			-- THE COMMITMENT STARTS HERE, not at the click (moved 2026-08-09). Slowing during the
-			-- windup punished you for the telegraph itself; now the wind-up leaves you mobile and
-			-- the speed cost lands exactly when the hitbox does. A swing cancelled by a stagger
-			-- during its windup therefore never pays the penalty at all.
-			-- Attack outranks Windup, so registering it is enough -- no need to clear Windup
-			-- first, and the two can never disagree about which is showing.
-			flowSet(attacker, "Attack", FW.Attack, MCFG.AttackSpeedMult)
+			--[[ THE SWING PHASE DOES NOT SLOW YOU (2026-08-10, dev's call).
+
+			     The windup carries its speed boost; from the hitbox frame onward the attack
+			     simply stops having an opinion about movement. Releasing the Windup key here
+			     rather than replacing it with a slower one means the swing phase falls through
+			     to whatever else is live -- crouch speed if you are crouched, normal otherwise
+			     -- instead of the attack asserting a speed it no longer wants to own.
+
+			     This is why the sources are named: "stop affecting speed" is expressible.
+			     Under the old single-slot system the only way to stop slowing someone was to
+			     write a number over the slot, which is what clobbered every other source. ]]
+			flowClear(attacker, "Windup")
 
 			--[[ THE HITBOX. A do-while: it always runs AT LEAST ONE frame, then keeps polling
 			     for as long as ActiveWindow lasts. At the configured ActiveWindow of 0 that is

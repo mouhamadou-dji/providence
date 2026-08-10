@@ -229,8 +229,12 @@ test("T13_ConfigIsCoherent", function()
 		"the telegraph should be longer than the follow-through")
 	-- The windup is a boost and the active frames are the commitment; if that inverted, the
 	-- telegraph would punish you and the hit would reward you.
-	assert((MCFG.WindupSpeedMult or 1) > MCFG.AttackSpeedMult,
-		"the windup must be faster than the swing, not slower")
+	-- The windup is the only phase that touches movement now; the swing phase deliberately
+	-- owns no speed source at all. Assert the boost is still a boost.
+	assert((MCFG.WindupSpeedMult or 1) >= 1,
+		"the windup should carry you into the swing, not slow you")
+	assert(MCFG.AttackSpeedMult == nil,
+		"AttackSpeedMult was removed 2026-08-10 -- the swing phase must not slow you")
 	assert(MCFG.ParryWhiffCooldown > MCFG.ParryCooldown,
 		"whiffing must cost more than landing, or mashing is free")
 	-- Every contextual attack needs a clip index that actually exists in Anims.
