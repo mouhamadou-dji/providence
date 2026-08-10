@@ -124,15 +124,16 @@ Config.Melee = {
 	Damage    = 10,
 	ChainMax  = 4,    -- hits in a full chain; also the length of the Anims array
 	ChainResetTime = 2.0, -- seconds of no swing before the chain returns to hit 1
-	-- Raised alongside the swing below (0.5 / 0.7). A swing is now Windup + ActiveWindow =
-	-- 0.60s long, so leaving the cooldown at 0.5 would let the next swing start while the
-	-- previous hitbox was still open -- the new swing's token would silently kill the old
-	-- one mid-flight.
-	-- Doubled from the original 0.5 alongside the swing below, so the chain keeps the same
-	-- relative rhythm. It also has to stay above Windup + ActiveWindow (0.84) or the next
-	-- swing would start while the previous hitbox was still open, and the new swing's token
-	-- would kill the old one mid-flight. The harness asserts that.
-	SwingCooldown  = 1.00, -- the chain's rhythm. Clicking faster never swings faster.
+	-- EXACTLY THE LENGTH OF AN ATTACK: Windup 0.45 + SwingPhase 0.20. The swing IS the
+	-- cooldown -- the moment the follow-through ends you can swing again, with no dead gap
+	-- where the attack is over but the input is still refused. It sat at 1.00 while the
+	-- attack was 0.65, which is a third of a second of nothing.
+	--
+	-- It must never drop BELOW the attack length: the next swing would start while the
+	-- previous one was still running, and the new swing's token would silently kill the old
+	-- one mid-flight, cutting its committed tail short. The harness asserts that bound, so
+	-- retuning Windup or SwingPhase without moving this fails a test rather than shipping.
+	SwingCooldown  = 0.65, -- the chain's rhythm. Clicking faster never swings faster.
 
 	-- TELEGRAPH. The hitbox does not exist during this -- it is the window in which a
 	-- defender reads the level and commits. The old stack ended up at 32 frames (0.53s)
@@ -482,6 +483,13 @@ Config.Movement = {
 		MinSpeed      = 55,   -- == MaxSpeed: dash distance no longer scales with momentum
 		MaxSpeed      = 55,
 		MomentumCurve = 1.5,  -- inert while MinSpeed == MaxSpeed
+		-- STEERABLE DASH (2026-08-10), the same delta-turn flow the slide uses: the dash keeps
+		-- the heading it launched with and rotates by exactly however much you turn the aim
+		-- each frame, capped at this rate. At 1100 deg/sec the cap never binds for real mouse
+		-- movement, so steering is 1:1 with the camera -- which is the ceiling of delta
+		-- steering anyway, since the dash can never rotate MORE than you rotated.
+		-- Turning only re-aims the dash; its speed and distance are untouched.
+		SteerRateDeg  = 1100,
 		-- DOUBLED then HALVED BACK 2026-08-09 (0.22 -> 0.44 -> 0.22, dev's final call).
 		-- Distance = speed * Duration, and speed is now constant at 55 (MinSpeed ==
 		-- MaxSpeed above), so every dash covers ~12.1 studs -- snappier than the original

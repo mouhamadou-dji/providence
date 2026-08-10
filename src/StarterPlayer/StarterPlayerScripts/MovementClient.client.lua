@@ -577,6 +577,56 @@ end
 -- Speed this dash was actually launched at, so the handback can be expressed against it.
 local dashLaunchSpeed = 0
 local dashDir = nil
+-- The live dash velocity, re-aimed every frame by updateDash. Kept as a vector (not just a
+-- direction) so the steering can rotate it without touching its magnitude -- turning a dash
+-- must never make it faster or slower, only point somewhere else.
+local dashVec = Vector3.zero
+-- Where the aim pointed last frame, for the same frame-to-frame delta the slide uses.
+local dashAimPrev = nil
+
+--[[ STEERABLE DASH (2026-08-10) -- the same delta-turn flow the slide uses.
+
+     The dash keeps the heading it launched with and rotates by exactly however much you turn
+     the aim this frame, capped at Dash.SteerRateDeg. Turn nothing and it holds its line; turn
+     the camera and it carves with you.
+
+     A DELTA, not a target, for the same reason the slide is: steering TOWARD the facing would
+     let any standing offset between body and dash drag the heading around on its own, so the
+     dash would never hold the line you launched on.
+
+     Only the DIRECTION changes -- the magnitude is preserved, so steering can never make a
+     dash longer or shorter than the one you paid for, and the server's displacement guard
+     (which budgets from the launch speed) stays valid. ]]
+local function updateDash(dt)
+	local v = vc()
+	if not v or not hrp then return end
+	local dir = Model.flatUnit(dashVec)
+	local aimNow = Model.flatUnit(hrp.CFrame.LookVector)
+	if dir and aimNow then
+		if dashAimPrev then
+			local turned = Model.angleBetweenDeg(dashAimPrev, aimNow)
+			if turned > 0.01 then
+				local maxStep = (DASHCFG.SteerRateDeg or 1100) * dt
+				local step = math.min(turned, maxStep)
+				local sign = (dashAimPrev:Cross(aimNow).Y >= 0) and 1 or -1
+				local steered = Model.flatUnit(
+					CFrame.fromAxisAngle(Vector3.yAxis, math.rad(step) * sign) * dir)
+				if steered then
+					dashVec = steered * dashVec.Magnitude
+					-- The handback on exit reads dashDir, so it has to follow the steering --
+					-- otherwise an air dash would fling you along the direction you STARTED in
+					-- after visibly travelling somewhere else.
+					dashDir = steered
+				end
+			end
+		end
+		dashAimPrev = aimNow
+	end
+	-- Re-aim the LIVE contribution rather than pushing a new one: update keeps the same
+	-- record, so the dash stays one contribution being steered instead of a stream of
+	-- replacements, and its duration keeps counting from the original launch.
+	v.update("dash", dashVec)
+end
 
 local function endDash(myToken, inheritPower)
 	if myToken ~= dashToken then return end -- a newer dash already took over
@@ -643,6 +693,10 @@ local function startDash()
 	dashToken += 1
 	dashLaunchSpeed = speed
 	dashDir = dir
+	dashVec = dir * speed
+	-- Seed the steering reference from the aim at launch, so the first frame measures a delta
+	-- of zero and the dash leaves exactly along `dir` instead of snapping.
+	dashAimPrev = Model.flatUnit(hrp.CFrame.LookVector)
 	local myToken = dashToken
 
 	-- The character faces where it dashes and stops auto-rotating toward MoveDirection, which
@@ -862,6 +916,7 @@ RunService:BindToRenderStep("MovementClientStep", Enum.RenderPriority.Character.
 	-- VelocityClient). Both actions still hand momentum back to the model on exit rather
 	-- than dead-stopping.
 	if isDashing then
+		updateDash(dt) -- re-aim the live dash by however much you turned this frame
 		hum:Move(Vector3.zero, false)
 		publishState(grounded)
 		return
@@ -932,6 +987,7 @@ local function acquire(char)
 	dashToken += 1 -- invalidates any in-flight endDash from the previous character
 	dashCooldownUntil = 0
 	dashLaunchSpeed, dashDir = 0, nil
+	dashVec, dashAimPrev = Vector3.zero, nil
 	isSliding = false
 	slideVec = Vector3.zero
 	slideAirTime = 0
