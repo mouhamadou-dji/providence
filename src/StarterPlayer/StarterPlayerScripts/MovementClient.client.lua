@@ -583,6 +583,8 @@ local dashDir = nil
 local dashVec = Vector3.zero
 -- Where the aim pointed last frame, for the same frame-to-frame delta the slide uses.
 local dashAimPrev = nil
+-- Launch time, so the per-frame decel knows how far through the dash it is.
+local dashStartedAt = 0
 
 --[[ STEERABLE DASH (2026-08-10) -- the same delta-turn flow the slide uses.
 
@@ -622,6 +624,26 @@ local function updateDash(dt)
 		end
 		dashAimPrev = aimNow
 	end
+
+	--[[ DECEL. The dash eases from its launch speed down to Dash.EndSpeedMult of it across
+	     the duration, so it settles rather than cutting out at full tilt.
+
+	     Done here as an explicit magnitude rather than through the velocity stack's own
+	     decay="linear", which decays all the way to zero -- this has to land at 75%. Driven
+	     off elapsed time, not accumulated dt, so it is framerate-independent by construction
+	     and a lag spike cannot leave the dash fast.
+
+	     Recomputed from dashLaunchSpeed every frame instead of scaling the previous value,
+	     which would compound the decay differently at different framerates. ]]
+	local endMult = DASHCFG.EndSpeedMult or 1
+	if endMult ~= 1 and dashLaunchSpeed > 0 then
+		local dur = DASHCFG.Duration or 0.275
+		local t = math.clamp((os.clock() - dashStartedAt) / math.max(dur, 0.001), 0, 1)
+		local mag = dashLaunchSpeed * (1 + (endMult - 1) * t)
+		local d = Model.flatUnit(dashVec)
+		if d then dashVec = d * mag end
+	end
+
 	-- Re-aim the LIVE contribution rather than pushing a new one: update keeps the same
 	-- record, so the dash stays one contribution being steered instead of a stream of
 	-- replacements, and its duration keeps counting from the original launch.
@@ -646,7 +668,12 @@ local function endDash(myToken, inheritPower)
 		-- a dead stop -- ended clamped at walkPower 1. The knob only ever bit in its bottom
 		-- fifth, and a standing dodge dumped you into a full run.
 		local ceiling = (hum and hum.WalkSpeed or MCFG.BaseWalkSpeed)
-		local carried = dashLaunchSpeed * (DASHCFG.MomentumCarry or 0.25)
+		-- Billed against the speed the dash ACTUALLY ended at, not the one it launched at.
+		-- Now that the dash decelerates, those differ by EndSpeedMult, and handing back the
+		-- launch speed would mean exiting a dash faster than the dash was moving.
+		local exitSpeed = dashVec.Magnitude
+		if exitSpeed <= 0 then exitSpeed = dashLaunchSpeed end
+		local carried = exitSpeed * (DASHCFG.MomentumCarry or 0.25)
 		state.walkPower = math.clamp(math.max(state.walkPower, carried / math.max(1, ceiling)), 0, 1)
 
 		-- Airborne, walkPower alone cannot move you (the Humanoid barely steers in the air), so
@@ -694,6 +721,7 @@ local function startDash()
 	dashLaunchSpeed = speed
 	dashDir = dir
 	dashVec = dir * speed
+	dashStartedAt = os.clock()
 	-- Seed the steering reference from the aim at launch, so the first frame measures a delta
 	-- of zero and the dash leaves exactly along `dir` instead of snapping.
 	dashAimPrev = Model.flatUnit(hrp.CFrame.LookVector)
@@ -987,7 +1015,7 @@ local function acquire(char)
 	dashToken += 1 -- invalidates any in-flight endDash from the previous character
 	dashCooldownUntil = 0
 	dashLaunchSpeed, dashDir = 0, nil
-	dashVec, dashAimPrev = Vector3.zero, nil
+	dashVec, dashAimPrev, dashStartedAt = Vector3.zero, nil, 0
 	isSliding = false
 	slideVec = Vector3.zero
 	slideAirTime = 0

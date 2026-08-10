@@ -504,7 +504,22 @@ Config.Movement = {
 		-- Dodge.IframeDuration (0.30) covers the whole dash again at this duration -- the
 		-- "punishable tail" from the 0.44 pass is gone; a dash is once more invulnerable
 		-- start to finish.
-		Duration      = 0.22, -- distance = speed * Duration, constant at ANY framerate
+		-- +25% (0.22 -> 0.275) 2026-08-10, paired with the decel below.
+		Duration      = 0.275, -- distance = speed * Duration, constant at ANY framerate
+		-- THE DASH DECELERATES. It launches at full speed and eases down to this fraction of
+		-- it by the end, rather than holding a flat velocity and cutting out -- so it reads as
+		-- a lunge that settles instead of a conveyor belt that switches off.
+		--
+		-- Applied as a per-frame magnitude in MovementClient.updateDash (which is already
+		-- rewriting the contribution every frame to steer it) rather than through the
+		-- velocity stack's own decay="linear", because that decays to ZERO and this needs to
+		-- land at 75%.
+		--
+		-- Distance is the integral, not speed x duration: averaging (1 + 0.75)/2 = 0.875 over
+		-- 0.275s gives ~13.2 studs against the old flat 12.1, so the dash also reaches very
+		-- slightly further. The server's displacement guard budgets speed * Duration * 1.5 =
+		-- ~22.7 studs, so it stays comfortably inside.
+		EndSpeedMult  = 0.75,
 		-- A FLAT 1.0s (2026-08-10, dev: "just make it stay 1s, no more half dashes"). This is
 		-- the same 1.0s it effectively took to get a full-power dash under the old rusty
 		-- window -- the difference is that the intervening window no longer hands you a
