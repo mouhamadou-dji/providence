@@ -614,6 +614,67 @@ local function resolveAgainst(atk, victimChar, victimPlayer, hum)
 end
 
 -- ── Swing ─────────────────────────────────────────────────────────────────
+--[[ MOVEMENT CONTEXT -- what the server believes you were doing when you swung.
+
+     THE PROBLEM. A player's character is client-owned, so the server's copy of the Humanoid
+     lags behind the client's. `FloorMaterial == Air` was the only airborne signal, and it is
+     among the SLOWEST things to replicate: jump and swing immediately and the server still
+     saw you standing, so the swing resolved as an ordinary chain hit. That is the "I have to
+     wait a bit before the aerial registers" report exactly.
+
+     THE FIX is not to trust the client -- it is to read faster-replicating signals. Velocity
+     and position stream continuously at roughly frame rate; Humanoid STATE changes on the
+     transition; FloorMaterial trails all of them. Taking ANY of them as sufficient means the
+     server recognises the jump on essentially the first frame it could possibly know about it.
+
+     Deliberately NOT a client payload. Every melee remote is payload-free and the attack
+     LEVEL depends on this context, so a client that could assert its own stance could claim
+     a low attack while standing and beat a high guard -- the one thing the mixup cannot
+     survive. These signals are all server-side readings of replicated physics. ]]
+local function movementContext(attacker, char, hum, hrp)
+	local mcfg = MCFG
+
+	-- AIRBORNE, in increasing order of responsiveness.
+	local airborne = hum.FloorMaterial == Enum.Material.Air
+
+	if not airborne then
+		local st = hum:GetState()
+		airborne = (st == Enum.HumanoidStateType.Jumping)
+			or (st == Enum.HumanoidStateType.Freefall)
+	end
+
+	if not airborne and hrp then
+		-- Rising fast enough that you can only just have jumped. This is the signal that
+		-- actually closes the gap, because velocity replicates before either of the above.
+		if hrp.AssemblyLinearVelocity.Y > (mcfg.AirborneRiseSpeed or 5) then
+			airborne = true
+		end
+	end
+
+	if not airborne and hrp then
+		-- Falling with nothing underneath: catches the case where you walked off a ledge, so
+		-- vertical speed is negative and the Humanoid has not caught up either.
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { char }
+		local drop = mcfg.GroundProbeDepth or 4
+		airborne = workspace:Raycast(hrp.Position, Vector3.new(0, -drop, 0), params) == nil
+	end
+
+	-- SPRINTING. The server's own flag needs the RequestSprint round trip to land, so a swing
+	-- thrown the instant you start sprinting would miss the lunge. Actual replicated speed is
+	-- the corroborating signal -- you cannot be moving at sprint pace without sprinting.
+	local ms = _G.MovementSystem
+	local sprinting = ms and ms.isSprinting and ms.isSprinting(attacker) or false
+	if not sprinting and hrp and not airborne then
+		local v = hrp.AssemblyLinearVelocity
+		local flat = Vector3.new(v.X, 0, v.Z).Magnitude
+		if flat >= (mcfg.LungeSpeedThreshold or 20) then sprinting = true end
+	end
+
+	return airborne, sprinting
+end
+
 local function processSwing(attacker)
 	local s = getPS(attacker)
 	if not s then return end
@@ -638,10 +699,11 @@ local function processSwing(attacker)
 
 	-- WHICH ATTACK THIS IS. Every input is the same click; the situation decides. All three
 	-- contextual attacks are HIGH -- only the chain reads stance for its level.
+	local airborne, sprinting = movementContext(attacker, char, hum, hrp)
 	local ms = _G.MovementSystem
 	local kind = Model.attackKind({
-		airborne     = hum.FloorMaterial == Enum.Material.Air,
-		sprinting    = ms and ms.isSprinting and ms.isSprinting(attacker) or false,
+		airborne     = airborne,
+		sprinting    = sprinting,
 		uncrouchedAt = s.uncrouchedAt,
 		now          = now,
 	}, MCFG)

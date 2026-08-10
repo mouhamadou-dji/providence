@@ -174,6 +174,20 @@ Config.Melee = {
 	RequireLineOfSight = true, -- raycast attacker -> victim before damage. The old system
 	                           -- had no such check and happily hit through walls.
 
+	-- ─── MOVEMENT CONTEXT DETECTION (2026-08-10) ─────────────────────────────
+	-- How the server decides you were airborne or sprinting when you swung. A player's
+	-- character is client-owned, so the server's Humanoid lags the client -- and
+	-- FloorMaterial, which used to be the ONLY airborne signal, is among the slowest things
+	-- to replicate. Jump and swing immediately and the server still saw you standing, so the
+	-- aerial did not register until you "waited it out".
+	--
+	-- These two thresholds back up the faster signals (velocity and Humanoid state) that the
+	-- server now also reads. None of it trusts the client: every one is a server-side reading
+	-- of replicated physics, which matters because the attack LEVEL depends on this context.
+	AirborneRiseSpeed   = 5,  -- studs/s upward: you can only just have jumped
+	GroundProbeDepth    = 4,  -- no ground within this far below the root = airborne (walked off a ledge)
+	LungeSpeedThreshold = 20, -- flat studs/s that can only be a sprint (walk 16, sprint 26)
+
 	-- REACTION GRACE. When the hitbox catches someone, the hit is not resolved immediately:
 	-- it is held for this long and re-checked, so a guard or parry that STARTS inside the
 	-- window still counts. Doubles as ping forgiveness. Measured entirely server-side, so a

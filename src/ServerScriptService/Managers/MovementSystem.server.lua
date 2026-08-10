@@ -251,10 +251,22 @@ local function processDash(player, dirToken, wasGrounded, claimedSpeed)
 		return denyDash(player, "cooldown", s.dashCooldownUntil - now)
 	end
 
-	-- GROUND ONLY (2026-08-09). The client refuses this too, for instant feedback; this is
-	-- the authoritative half. FloorMaterial is checked server-side rather than trusting the
-	-- client's wasGrounded flag, which a spoofing client would simply lie about.
-	if hum.FloorMaterial == Enum.Material.Air then
+	--[[ GROUND ONLY (2026-08-09). The client refuses this too, for instant feedback; this is
+	     the authoritative half, and it reads the server's own physics rather than the
+	     client's wasGrounded flag, which a spoofing client would simply lie about.
+
+	     THREE SIGNALS, not just FloorMaterial (2026-08-10). The character is client-owned so
+	     the server's Humanoid lags, and FloorMaterial is the slowest part of it to catch up --
+	     checking only that let a dash thrown right after a jump slip through as "grounded",
+	     which is the same replication lag that made aerial ATTACKS fail to register until you
+	     waited. Failing permissively is the worse direction here: it hands out the air dash
+	     that was deliberately removed. ]]
+	local st = hum:GetState()
+	local airborne = hum.FloorMaterial == Enum.Material.Air
+		or st == Enum.HumanoidStateType.Jumping
+		or st == Enum.HumanoidStateType.Freefall
+		or (hrp ~= nil and hrp.AssemblyLinearVelocity.Y > 5)
+	if airborne then
 		return denyDash(player, "airborne")
 	end
 
