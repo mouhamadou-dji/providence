@@ -733,13 +733,14 @@ local function processSwing(attacker)
 			-- first, and the two can never disagree about which is showing.
 			flowSet(attacker, "Attack", FW.Attack, MCFG.AttackSpeedMult)
 
-			-- ACTIVE FRAMES. Polled every frame across the window rather than sampled once: a
-			-- single instant either whiffs or lands purely on where both fighters happened to be
-			-- that tick, which is what read as "the hitbox is behind me" in the old stack.
-			-- `seen` makes a victim catchable at most once per swing.
+			--[[ THE HITBOX. A do-while: it always runs AT LEAST ONE frame, then keeps polling
+			     for as long as ActiveWindow lasts. At the configured ActiveWindow of 0 that is
+			     exactly the single frame the dev asked for -- the hitbox flickering once at
+			     the windup/swing boundary -- and raising the config re-opens a polled window
+			     with no code change. `seen` caps a victim at one hit per swing either way. ]]
 			local seen = {}
 			local windowStart = os.clock()
-			while os.clock() - windowStart < MCFG.ActiveWindow do
+			repeat
 				local curAttacker = getPS(attacker)
 				if not curAttacker or curAttacker.swingToken ~= myToken then break end
 				local aChar2, _, aHRP2 = charParts(attacker)
@@ -758,7 +759,15 @@ local function processSwing(attacker)
 						end
 					end
 				end
+				if os.clock() - windowStart >= (MCFG.ActiveWindow or 0) then break end
 				RunService.Heartbeat:Wait()
+			until false
+
+			-- THE COMMITTED TAIL. No hitbox any more, but the speed penalty and the Attacking
+			-- state hold for SwingPhase, so a whiff still costs you the follow-through. This
+			-- is what makes the attack 0.65s long rather than ending the instant it connects.
+			if MCFG.SwingPhase and MCFG.SwingPhase > 0 then
+				task.wait(MCFG.SwingPhase)
 			end
 		end)
 

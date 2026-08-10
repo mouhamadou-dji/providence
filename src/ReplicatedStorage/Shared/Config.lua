@@ -139,24 +139,32 @@ Config.Melee = {
 	-- after four separate bumps, all in the same direction, because the hitbox kept arriving
 	-- before anyone could react.
 	--
-	-- SLOWED 2026-08-10 (dev: "hard to react"), in two passes: first to 0.43, then to this.
-	-- The figure that matters is the TOTAL -- attacks now run at HALF their original speed,
-	-- so Windup and ActiveWindow are simply the original 0.30 / 0.12 doubled.
+	-- RESHAPED 2026-08-10 pt2 to the dev's explicit timing: 0.45 windup + 0.20 swing = 0.65
+	-- total, with the hitbox a SINGLE FRAME at the boundary between the two.
+	--
+	--   |<------- 0.45 Windup ------->|X|<---- 0.20 SwingPhase ---->|
+	--    telegraph, no hitbox          ^  committed recovery, no hitbox
+	--                                  hitbox, one frame
 	--
 	-- The ANIMATION follows automatically: CombatClient time-scales each clip to
-	-- Windup + ActiveWindow, so a swing twice as long plays the same clip at 0.5x with no
-	-- separate multiplier to keep in sync.
-	--
-	-- 0.60 is also comfortably past the old stack's hard-won 0.53, which it reached after
-	-- four separate bumps all in this direction -- so this is the well-trodden side of that
-	-- tuning, not new ground.
-	Windup = 0.60,
+	-- Windup + SwingPhase, so the clip always fills exactly the 0.65s the attack lasts.
+	Windup = 0.45,
 
-	-- ACTIVE FRAMES, not one instant. The hitbox is polled every frame across this window
-	-- and a victim can only be caught once per swing. The archived system recorded that a
-	-- single-frame check "read as 'the hitbox is behind me'" whenever either fighter kept
-	-- moving mid-swing -- this window is that bug's fix, kept.
-	ActiveWindow = 0.24,
+	-- HITBOX ACTIVE WINDOW. 0 means a SINGLE FRAME at the end of the windup (the loop always
+	-- runs at least once), which is the dev's explicit spec -- the hitbox "flickers in one
+	-- frame" at the windup/swing boundary. Any value above 0 polls across that window
+	-- instead, catching a victim at most once per swing either way.
+	--
+	-- ⚠ WORTH KNOWING: the archived stack shipped a single-frame check and recorded that it
+	-- "read as 'the hitbox is behind me'" whenever either fighter kept moving mid-swing --
+	-- landing or whiffing purely on where both happened to be for one tick. Raising this back
+	-- to ~0.08 is the first thing to try if hits start feeling like they pass through people.
+	ActiveWindow = 0,
+
+	-- The committed tail AFTER the hitbox frame: the follow-through you cannot cancel. No
+	-- hitbox exists during it, but the attack speed penalty and the Attacking state hold, so
+	-- whiffing still costs you. Windup + SwingPhase is the whole attack: 0.45 + 0.20 = 0.65s.
+	SwingPhase = 0.20,
 
 	-- Box swept from the attacker's root. Reach = offset.Z + size.Z/2 = 5.5 studs.
 	HitboxSize   = Vector3.new(5, 5, 5),

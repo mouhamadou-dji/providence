@@ -186,8 +186,10 @@ local function playSwing(hitNum)
 	for i, other in pairs(tracks) do
 		if i ~= hitNum and other.IsPlaying then other:Stop(0.05) end
 	end
-	-- Windup plus active frames is the real length of a swing.
-	startFitted(t, (MCFG.Windup or 0.3) + (MCFG.ActiveWindow or 0.12))
+	-- Windup plus the committed tail is the real length of a swing (0.45 + 0.20 = 0.65).
+	-- NOT ActiveWindow -- that is now a single hitbox frame at the boundary between the two,
+	-- so fitting the clip to it would play the whole animation in one frame.
+	startFitted(t, (MCFG.Windup or 0.45) + (MCFG.SwingPhase or 0.20))
 end
 
 -- Reactions outrank the hold: drop the pose so the two never blend, and let updatePose put it
