@@ -814,6 +814,11 @@ local function startDash()
 	-- dash launches from the slide's speed rather than from a standstill. (The mirror --
 	-- slide cancels dash -- lives in onCtrlDown.)
 	if isSliding then endSlide(true) end
+	-- DASH ALSO CANCELS AN ATTACK-DASH, and this one is not tech, it is a correctness fix
+	-- (2026-08-10). Contributions VECTOR-SUM, so a real dash fired during a lunge or aerial
+	-- would have added 68.75 to another 68.75 and flung the player at double dash speed.
+	-- Cancelling with the handback keeps the momentum, exactly like the slide case above.
+	if atkDashActive then endAttackDash(true) end
 
 	local dir, token = dashDirAndToken()
 	if not dir then return end

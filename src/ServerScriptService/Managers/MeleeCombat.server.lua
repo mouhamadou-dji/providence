@@ -667,9 +667,24 @@ local function movementContext(attacker, char, hum, hrp)
 	local ms = _G.MovementSystem
 	local sprinting = ms and ms.isSprinting and ms.isSprinting(attacker) or false
 	if not sprinting and hrp and not airborne then
-		local v = hrp.AssemblyLinearVelocity
-		local flat = Vector3.new(v.X, 0, v.Z).Magnitude
-		if flat >= (mcfg.LungeSpeedThreshold or 20) then sprinting = true end
+		--[[ ⚠ THE SPEED FALLBACK MUST EXCLUDE DASH AND SLIDE (fixed 2026-08-10).
+
+		     A dash moves at Dash.MaxSpeed (68.75) and a slide enters around 36 -- both far
+		     above this threshold -- so a bare speed check counted either as "sprinting" and
+		     turned the swing into a LUNGE. Since a lunge now launches its own attackDash,
+		     dashing and then attacking gave you a second dash you never asked for: the
+		     reported "the default dash turned into the aerial and lunge dash".
+
+		     Only genuine locomotion should qualify. A player who is not sprinting, dashing or
+		     sliding cannot exceed BaseWalkSpeed (16), so anything past this really is a
+		     sprint the server has not been told about yet. ]]
+		local dashing = ms and ms.isDashing and ms.isDashing(attacker) or false
+		local sliding = ms and ms.isSliding and ms.isSliding(attacker) or false
+		if not dashing and not sliding then
+			local v = hrp.AssemblyLinearVelocity
+			local flat = Vector3.new(v.X, 0, v.Z).Magnitude
+			if flat >= (mcfg.LungeSpeedThreshold or 20) then sprinting = true end
+		end
 	end
 
 	return airborne, sprinting
