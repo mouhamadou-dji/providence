@@ -529,11 +529,12 @@ Config.Movement = {
 		-- velocity stack's own decay="linear", because that decays to ZERO and this needs to
 		-- land at 75%.
 		--
-		-- Distance is the integral, not speed x duration: averaging (1 + 0.75)/2 = 0.875 over
-		-- 0.275s gives ~13.2 studs against the old flat 12.1, so the dash also reaches very
-		-- slightly further. The server's displacement guard budgets speed * Duration * 1.5 =
-		-- ~22.7 studs, so it stays comfortably inside.
-		EndSpeedMult  = 0.75,
+		-- Distance is the integral, not speed x duration: averaging (1 + 0.5)/2 = 0.75 over
+		-- 0.275s gives ~11.3 studs. Note that deepening the decel SHORTENS the dash even
+		-- though the duration is unchanged -- at 0.75 it reached ~13.2, and the old flat
+		-- dash covered 12.1. The server's displacement guard budgets speed * Duration * 1.5
+		-- = ~22.7 studs, so it stays comfortably inside either way.
+		EndSpeedMult  = 0.50,
 		-- A FLAT 1.0s (2026-08-10, dev: "just make it stay 1s, no more half dashes"). This is
 		-- the same 1.0s it effectively took to get a full-power dash under the old rusty
 		-- window -- the difference is that the intervening window no longer hands you a
