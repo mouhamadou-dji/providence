@@ -350,6 +350,33 @@ Config.Speed = {
 -- those multipliers keeps composing untouched and there is no feedback loop.
 Config.Movement = {
 	BaseWalkSpeed = 16,
+	-- Roblox's stock JumpPower. MovementFlow sets Humanoid.UseJumpPower = true explicitly so
+	-- this is actually the property in play -- nothing in the codebase set it before, which
+	-- silently made half the existing jump writes dead depending on the place default.
+	BaseJumpPower = 50,
+
+	-- ─── MOVEMENT FLOW WEIGHTS (2026-08-10) ──────────────────────────────────
+	-- Every system that wants to change WalkSpeed/JumpPower registers a NAMED setter with a
+	-- weight; the highest weight wins and ties go to whichever was registered first. This
+	-- replaced a single shared multiplier slot in CombatCore where each caller silently
+	-- destroyed the last one's value -- the bug where tapping guard during a swing left you
+	-- permanently at 4 studs/s with nothing scheduled to restore it.
+	--
+	-- Gaps of 10 are deliberate: inserting a new state between two existing ones should not
+	-- mean renumbering everything below it.
+	FlowWeights = {
+		Default = 0,   -- the resting entry; nothing registers below this
+		Sprint  = 10,
+		Crouch  = 20,
+		Guard   = 30,
+		Windup  = 40,  -- the attack telegraph's speed boost
+		Attack  = 50,  -- ...and its commitment, which outranks Guard on purpose: it makes
+		               -- the guard/attack overlap resolve the same way every time instead of
+		               -- depending on which remote arrived first.
+		Stagger = 60,
+		Freeze  = 100, -- IdentityManager gender-select and the mod freeze. Registered
+		               -- `absolute`, so no buff can move a frozen player.
+	},
 	SprintSpeed   = 26,  -- the ceiling sprint raises WalkSpeed to (via CombatCore.setSpeed)
 	SpeedMult = {
 		Normal = 1.0,

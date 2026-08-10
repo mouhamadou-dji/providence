@@ -42,8 +42,10 @@ local function applyFreeze(target)
 	local char=target.Character; if not char then return end
 	local hrp=char:FindFirstChild("HumanoidRootPart"); if not hrp then return end
 	hrp.Anchored=true
-	local hum=char:FindFirstChildOfClass("Humanoid")
-	if hum then hum.WalkSpeed=0; hum.JumpHeight=0 end
+	-- Absolute freeze through MovementFlow instead of a raw write, so it cannot be undone by
+	-- an unrelated system's speed change and does not have to guess a value to restore.
+	local mf=_G.MovementFlow
+	if mf then mf.set(target,"ModFreeze",100,0,0,{absolute=true}) end
 end
 
 local function isOwner(p) return table.find(OWNERS, p.Name) ~= nil end
@@ -109,7 +111,11 @@ commands.reviveDowned = function(exec, target)
 	if char then
 		local rm=_G.RagdollManager; if rm then rm.unragdoll(char) end
 		local hum=char:FindFirstChildOfClass("Humanoid")
-		if hum then hum.Health=hum.MaxHealth; hum.WalkSpeed=16; hum.JumpPower=50; hum.PlatformStand=false end
+		if hum then hum.Health=hum.MaxHealth; hum.PlatformStand=false end
+		-- Release the freeze rather than writing 16/50 back: those constants erased whatever
+		-- injury, rage or caste scaling the player legitimately had.
+		local mf=_G.MovementFlow
+		if mf then mf.clear(target,"ModFreeze"); mf.refreshScalars(target) end
 	end
 	fireNotif(target,"Revived","You have been revived by the lore team.",6,"info")
 end
@@ -407,8 +413,9 @@ commands.unfreezePlayer = function(exec,target)
 	if frozenPlayers[uid] then frozenPlayers[uid].conn:Disconnect(); frozenPlayers[uid]=nil end
 	local char=target.Character; local hrp=char and char:FindFirstChild("HumanoidRootPart")
 	if hrp then hrp.Anchored=false end
-	local hum=char and char:FindFirstChildOfClass("Humanoid")
-	if hum then hum.WalkSpeed=16; hum.JumpHeight=7.2 end
+	-- Same as reviveDowned: clear the key, do not assert constants.
+	local mf=_G.MovementFlow
+	if mf then mf.clear(target,"ModFreeze"); mf.refreshScalars(target) end
 end
 commands.respawnPlayer = function(exec,target)
 	assert(target,"target player required")

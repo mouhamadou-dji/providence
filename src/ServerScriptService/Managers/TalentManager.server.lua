@@ -80,10 +80,12 @@ end
 
 local function applyEffect(player, talentId, isGrant)
     if talentId == "Swift" then
-        local cm = _G.CombatManager
-        if cm and cm.getCombatState(player) == "Idle" then
-            cm.setSpeed(player, isGrant and 1.1 or 1.0)
-        end
+        -- Swift is a MULTIPLIER now, not a speed state. As a setter at 1.1 it occupied the
+        -- one shared slot, so the next crouch/guard/swing destroyed it permanently -- and it
+        -- was gated on being Idle purely to dodge that collision. As a scalar it simply
+        -- scales whatever you are doing, which is what getSpeedMult was always written for.
+        local mf = _G.MovementFlow
+        if mf and mf.refreshScalars then mf.refreshScalars(player) end
     end
     if ATTRIBUTE_MIRRORED[talentId] then
         local char = player.Character

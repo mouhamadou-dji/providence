@@ -164,9 +164,34 @@ local function setCombatState(player, state)
 	if cm and cm.setCombatState then cm.setCombatState(player, state) end
 end
 
-local function setSpeed(player, mult)
-	local cm = _G.CombatManager
-	if cm and cm.setSpeed then cm.setSpeed(player, mult) end
+--[[ SPEED IS OWNED BY NAMED SOURCES (2026-08-10), not by a shared slot.
+
+     Each combat state registers its own key and clears its own key. It never "restores to 1",
+     because restoring to a constant asserts a value this system does not own -- that is
+     precisely how tapping guard during a swing used to leave the player at 4 studs/s forever:
+     the swing's slow landed, its restore was skipped because an unrelated state flag had
+     changed, and nothing else was scheduled to write speed again.
+
+     Clearing a key is idempotent and order-independent, so a restore can be called twice, out
+     of order, or after another source took over, and still be correct. ]]
+local FW = Config.Movement.FlowWeights
+
+local function flowSet(player, name, weight, walkMult, opts)
+	local mf = _G.MovementFlow
+	if mf then mf.set(player, name, weight, walkMult, nil, opts) end
+end
+
+local function flowClear(player, name)
+	local mf = _G.MovementFlow
+	if mf then mf.clear(player, name) end
+end
+
+-- Every key this system can own. Clearing all of them is the "I am no longer doing anything
+-- to your speed" statement, used by the swing's cleanup path.
+local SWING_KEYS = { "Windup", "Attack" }
+
+local function clearSwingSpeed(player)
+	for _, k in ipairs(SWING_KEYS) do flowClear(player, k) end
 end
 
 local function fireEvent(player, payload)
@@ -287,14 +312,20 @@ local function applyStagger(player, duration, cause)
 	s.swingToken += 1
 	s.chain = Model.newChain()
 	setCombatState(player, "Staggered")
-	setSpeed(player, MCFG.StaggerSpeedMult)
+	-- A stagger cancels the swing outright, so its keys go too. Stagger outranks Guard, so a
+	-- player staggered mid-guard is correctly held at stagger speed until it expires and the
+	-- guard's own key resumes -- no coordination between the two needed.
+	clearSwingSpeed(player)
+	flowSet(player, "Stagger", FW.Stagger, MCFG.StaggerSpeedMult)
 	fireEvent(player, { kind = "Staggered", duration = duration, cause = cause })
 	task.delay(duration, function()
 		local cur = getPS(player)
 		if not cur or os.clock() < cur.staggeredUntil then return end
+		-- Clear unconditionally. The old version only restored when combatState was still
+		-- "Staggered", so anything that changed that flag first left the stagger slow stuck.
+		flowClear(player, "Stagger")
 		if cur.combatState == "Staggered" then
 			setCombatState(player, cur.guarding and "Blocking" or "Idle")
-			setSpeed(player, cur.guarding and MCFG.GuardSpeedMult or 1)
 		end
 	end)
 end
@@ -313,9 +344,13 @@ local function startGuard(player)
 	-- would silently convert a low guard into a high one and the read would be unloseable.
 	s.guardLevel = levelFor(player)
 	setCombatState(player, "Blocking")
-	setSpeed(player, MCFG.GuardSpeedMult)
 	local ms = _G.MovementSystem
+	-- stopSprint BEFORE registering the guard. It used to run one line after, and since it
+	-- cleared the sprint state it also rewrote speed -- overwriting the guard slow that had
+	-- just been set. Order no longer strictly matters now that the two own separate keys, but
+	-- doing it first keeps the intent obvious.
 	if ms and ms.stopSprint then ms.stopSprint(player) end
+	flowSet(player, "Guard", FW.Guard, MCFG.GuardSpeedMult)
 	-- THE GUARD POSE IS SERVER-CONFIRMED, never predicted on the press. startGuard refuses
 	-- outright when the player is dead, staggered or in hitstun, and a client that painted the
 	-- pose optimistically on mouse-down would stand there visibly guarding while the server let
@@ -337,9 +372,12 @@ local function endGuard(player)
 	-- collapses on empty stamina, and the client has no other way to learn about that one.
 	-- Without this the pose would stay up on a guard that no longer exists.
 	fireEvent(player, { kind = "GuardEnd" })
+	-- Unconditional, like the fireEvent above. Previously this only released the speed when
+	-- combatState was still "Blocking", so a swing that had overwritten that flag left the
+	-- guard slow applied to a player who was no longer guarding.
+	flowClear(player, "Guard")
 	if s.combatState == "Blocking" then
 		setCombatState(player, "Idle")
-		setSpeed(player, 1)
 	end
 end
 
@@ -525,13 +563,14 @@ local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 		vs.swingToken += 1
 		vs.chain = Model.newChain()
 		vs.hitLockUntil = math.max(vs.hitLockUntil, os.clock() + (MCFG.HitLockout or 0.7))
-		-- That invalidated swing will bail out of its own coroutine without reaching the
-		-- restore at the end, so its speed change is ours to undo. Without this a victim
-		-- interrupted mid-windup keeps the windup speed boost indefinitely.
+		-- That invalidated swing bails out of its own coroutine without reaching its cleanup,
+		-- so its keys are ours to release. Clearing named keys means we do not have to know
+		-- whether the victim is also guarding -- their Guard key is untouched and simply
+		-- becomes the winner again.
+		clearSwingSpeed(victimPlayer)
 		if vs.combatState == "Attacking" then
 			setCombatState(victimPlayer, vs.guarding and "Blocking" or "Idle")
 		end
-		setSpeed(victimPlayer, vs.guarding and MCFG.GuardSpeedMult or 1)
 	end
 
 	-- KILL ATTRIBUTION. Humanoid.Died carries no notion of who did it, so the damage source
@@ -628,11 +667,11 @@ local function processSwing(attacker)
 	local myToken = s.swingToken
 
 	setCombatState(attacker, "Attacking")
-	-- WINDUP CARRIES YOU FORWARD. The telegraph is now a small speed BOOST rather than
-	-- neutral, so committing to a swing steps you into it; the slow lands when the hitbox
-	-- opens (see below). Expressed as a multiplier because CombatCore.setSpeed composes with
-	-- the health/injury/rage/caste chain -- see the note on WindupSpeedMult in Config.
-	setSpeed(attacker, MCFG.WindupSpeedMult or 1)
+	-- WINDUP CARRIES YOU FORWARD. The telegraph is a small speed BOOST rather than neutral,
+	-- so committing to a swing steps you into it; the slow lands when the hitbox opens.
+	-- Still a multiplier, because MovementFlow scales the winner by the health / injury /
+	-- rage / caste / talent scalars -- a wounded player gets the boost against THEIR ceiling.
+	flowSet(attacker, "Windup", FW.Windup, MCFG.WindupSpeedMult or 1)
 	swungBindable:Fire(attacker) -- WolfManager read-parry hook
 
 	-- LUNGE AND AERIAL both carry you forward. Pushed as a velocity CONTRIBUTION rather than a
@@ -671,54 +710,75 @@ local function processSwing(attacker)
 	}
 
 	task.spawn(function()
-		-- WINDUP: the telegraph. No hitbox exists yet -- this is the window a defender reads
-		-- the level in and commits to a matching guard or parry.
-		task.wait(MCFG.Windup)
-		local cur = getPS(attacker)
-		if not cur or cur.swingToken ~= myToken then return end -- staggered, hit, or superseded
-		local aChar, aHum, aHRP = charParts(attacker)
-		if not aChar or not aHum or not aHRP or aHum.Health <= 0 then return end
+		--[[ The whole body runs inside a pcall so the CLEANUP BELOW ALWAYS RUNS.
 
-		-- THE COMMITMENT STARTS HERE, not at the click (moved 2026-08-09). Slowing during the
-		-- windup punished you for the telegraph itself; now the wind-up leaves you mobile and
-		-- the speed cost lands exactly when the hitbox does. A swing cancelled by a stagger
-		-- during its windup therefore never pays the penalty at all.
-		setSpeed(attacker, MCFG.AttackSpeedMult)
+		     A throw in here used to strand the attacker at attack walk-speed until their next
+		     swing -- it happened once already, when the hit payload dereferenced a nil victim
+		     player against an NPC. That specific dereference was fixed; the structural hazard
+		     (a slow with no guaranteed release) was not, until now. ]]
+		local ok, err = pcall(function()
+			-- WINDUP: the telegraph. No hitbox exists yet -- this is the window a defender reads
+			-- the level in and commits to a matching guard or parry.
+			task.wait(MCFG.Windup)
+			local cur = getPS(attacker)
+			if not cur or cur.swingToken ~= myToken then return end -- staggered, hit, or superseded
+			local aChar, aHum, aHRP = charParts(attacker)
+			if not aChar or not aHum or not aHRP or aHum.Health <= 0 then return end
 
-		-- ACTIVE FRAMES. Polled every frame across the window rather than sampled once: a
-		-- single instant either whiffs or lands purely on where both fighters happened to be
-		-- that tick, which is what read as "the hitbox is behind me" in the old stack.
-		-- `seen` makes a victim catchable at most once per swing.
-		local seen = {}
-		local windowStart = os.clock()
-		while os.clock() - windowStart < MCFG.ActiveWindow do
-			local curAttacker = getPS(attacker)
-			if not curAttacker or curAttacker.swingToken ~= myToken then break end
-			local aChar2, _, aHRP2 = charParts(attacker)
-			if not aChar2 or not aHRP2 then break end
+			-- THE COMMITMENT STARTS HERE, not at the click (moved 2026-08-09). Slowing during the
+			-- windup punished you for the telegraph itself; now the wind-up leaves you mobile and
+			-- the speed cost lands exactly when the hitbox does. A swing cancelled by a stagger
+			-- during its windup therefore never pays the penalty at all.
+			-- Attack outranks Windup, so registering it is enough -- no need to clear Windup
+			-- first, and the two can never disagree about which is showing.
+			flowSet(attacker, "Attack", FW.Attack, MCFG.AttackSpeedMult)
 
-			for _, part in ipairs(hitboxQuery(aChar2, aHRP2)) do
-				local vc = part:FindFirstAncestorOfClass("Model")
-				if vc and vc ~= aChar2 and not seen[vc] then
-					local vHum = vc:FindFirstChildOfClass("Humanoid")
-					local vHRP = vc:FindFirstChild("HumanoidRootPart")
-					if vHum and vHRP and vHum.Health > 0
-						and hasLineOfSight(aChar2, aHRP2.Position, vc, vHRP.Position) then
-						seen[vc] = true
-						local vp = Players:GetPlayerFromCharacter(vc)
-						resolveAgainst(atk, vc, vp, vHum)
+			-- ACTIVE FRAMES. Polled every frame across the window rather than sampled once: a
+			-- single instant either whiffs or lands purely on where both fighters happened to be
+			-- that tick, which is what read as "the hitbox is behind me" in the old stack.
+			-- `seen` makes a victim catchable at most once per swing.
+			local seen = {}
+			local windowStart = os.clock()
+			while os.clock() - windowStart < MCFG.ActiveWindow do
+				local curAttacker = getPS(attacker)
+				if not curAttacker or curAttacker.swingToken ~= myToken then break end
+				local aChar2, _, aHRP2 = charParts(attacker)
+				if not aChar2 or not aHRP2 then break end
+
+				for _, part in ipairs(hitboxQuery(aChar2, aHRP2)) do
+					local vc = part:FindFirstAncestorOfClass("Model")
+					if vc and vc ~= aChar2 and not seen[vc] then
+						local vHum = vc:FindFirstChildOfClass("Humanoid")
+						local vHRP = vc:FindFirstChild("HumanoidRootPart")
+						if vHum and vHRP and vHum.Health > 0
+							and hasLineOfSight(aChar2, aHRP2.Position, vc, vHRP.Position) then
+							seen[vc] = true
+							local vp = Players:GetPlayerFromCharacter(vc)
+							resolveAgainst(atk, vc, vp, vHum)
+						end
 					end
 				end
+				RunService.Heartbeat:Wait()
 			end
-			RunService.Heartbeat:Wait()
+		end)
+
+		if not ok then
+			warn("[MeleeCombat] swing body errored: " .. tostring(err))
 		end
 
-		-- Hand movement back. Guarding survives a swing (you can swing out of a guard), so
-		-- the restore respects it rather than stamping Idle over everything.
+		--[[ CLEANUP. Runs on EVERY exit -- normal finish, early return, break, or a throw.
+
+		     Only release the keys if this swing is still the current one: a newer swing owns
+		     them now and clearing here would cancel its slow. Note there is no "restore to
+		     1" any more, and no combatState gate on the speed -- releasing a named key is
+		     correct regardless of what else has happened, which is exactly what the old
+		     state-gated restore got wrong. ]]
 		local after = getPS(attacker)
-		if after and after.swingToken == myToken and after.combatState == "Attacking" then
-			setCombatState(attacker, after.guarding and "Blocking" or "Idle")
-			setSpeed(attacker, after.guarding and MCFG.GuardSpeedMult or 1)
+		if after and after.swingToken == myToken then
+			clearSwingSpeed(attacker)
+			if after.combatState == "Attacking" then
+				setCombatState(attacker, after.guarding and "Blocking" or "Idle")
+			end
 		end
 	end)
 end

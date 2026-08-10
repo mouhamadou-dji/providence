@@ -273,24 +273,52 @@ task.spawn(function()
 	end
 end)
 
--- WalkSpeed nudge: client owns network authority for its own character's movement input
--- (established precedent in this codebase -- see the crouch-freeze fix), so this is applied
--- directly here rather than round-tripping to the server for what's a flavor pull, not a
--- hard lock (player always retains full input control, per design doc).
+--[[ WalkSpeed nudge: a flavour pull toward the cliff, applied client-side because it depends
+     on this frame's own input direction (the player always keeps full control -- per design
+     doc it is a lean, not a lock).
+
+     REWRITTEN 2026-08-10 against MovementFlow. The previous version snapshotted a base speed
+     once at spawn and wrote `base * 1.2` / `base * 0.7` every Heartbeat with no else branch,
+     so it (a) drifted from every later legitimate speed change, (b) NEVER restored when the
+     pull ended, leaving a permanent 11.2 or 19.2, and (c) re-asserted itself over the server
+     every frame.
+
+     Now it scales the server's CURRENT resolved value, read from the MovementWalkSpeed
+     attribute, and yields entirely when a high-priority server state owns the character --
+     the MovementWeight gate. A stagger, a freeze or an attack commitment must not be
+     softened by a sanity effect. ]]
+local NUDGE_MAX_WEIGHT = 25 -- yield to anything above Crouch: Guard, Windup, Attack, Stagger, Freeze
+local nudging = false
+
 RunService.Heartbeat:Connect(function()
 	local char = localPlayer.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	if not hum or not hrp then return end
-	if not cliffPullDir then return end
-	local moveDir = hum.MoveDirection
-	if moveDir.Magnitude < 0.1 then return end
-	local towardCliff = moveDir.Unit:Dot(cliffPullDir) > 0.3
-	local awayFromCliff = moveDir.Unit:Dot(-cliffPullDir) > 0.3
-	if towardCliff then
-		hum.WalkSpeed = baseWalkSpeed * 1.2
-	elseif awayFromCliff then
-		hum.WalkSpeed = baseWalkSpeed * 0.7
+
+	local resolved = char:GetAttribute("MovementWalkSpeed")
+	local weight   = char:GetAttribute("MovementWeight") or 0
+
+	local mult
+	if cliffPullDir and resolved and weight <= NUDGE_MAX_WEIGHT then
+		local moveDir = hum.MoveDirection
+		if moveDir.Magnitude >= 0.1 then
+			if moveDir.Unit:Dot(cliffPullDir) > 0.3 then
+				mult = 1.2
+			elseif moveDir.Unit:Dot(-cliffPullDir) > 0.3 then
+				mult = 0.7
+			end
+		end
+	end
+
+	if mult then
+		hum.WalkSpeed = resolved * mult
+		nudging = true
+	elseif nudging then
+		-- Hand it straight back to the server's value. This is the branch the old version
+		-- never had, and its absence is why the effect outlived the sanity tier that caused it.
+		if resolved then hum.WalkSpeed = resolved end
+		nudging = false
 	end
 end)
 

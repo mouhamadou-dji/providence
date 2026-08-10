@@ -51,7 +51,11 @@ do
 	end)
 	if ok and cfg then movementCfg = cfg.Movement end
 end
-movementCfg = movementCfg or { BaseWalkSpeed = 16, SpeedMult = { Normal = 1.0, Crouch = 0.5, Sprint = 26/16 } }
+movementCfg = movementCfg or {
+	BaseWalkSpeed = 16,
+	SpeedMult = { Normal = 1.0, Crouch = 0.5, Sprint = 26/16 },
+	FlowWeights = { Default = 0, Sprint = 10, Crouch = 20 },
+}
 BASE_WALK_SPEED = movementCfg.BaseWalkSpeed or 16
 
 -- The authorised-ceiling multipliers. Sprint was added back by the movement revamp
@@ -97,16 +101,29 @@ local pState = {}
 local function initState(uid) pState[uid] = { isCrouching = false } end
 local function getPS(player) return player and pState[player.UserId] end
 
--- ─── CENTRAL SPEED SETTER — all WalkSpeed changes go here ────────────────────
+--[[ ─── MOVEMENT STATE → a NAMED MovementFlow source (2026-08-10) ──────────────
+
+     This used to funnel into CombatCore.setSpeed, which kept ONE multiplier for the whole
+     game -- so a crouch and a combat slow destroyed each other, in whichever order they
+     landed, and whichever one's release got skipped stayed applied forever.
+
+     Now each movement state owns its own weighted key. "Normal" is not a speed at all, it is
+     the ABSENCE of Crouch and Sprint, so it clears rather than writing 1.0 -- writing 1.0 was
+     how stopSprint used to erase a live stagger or guard slow every time it fired. ]]
 local function setMovementState(player, stateName, customMult)
-	local mult = customMult or SPEED_MULT[stateName] or 1.0
-	local cm = _G.CombatManager -- CombatCore: owns the multiplier stack (injury/rage/caste/health)
-	if cm and cm.setSpeed then
-		cm.setSpeed(player, mult)
-	else
-		local char = player.Character
-		local hum  = char and char:FindFirstChildOfClass("Humanoid")
-		if hum then hum.WalkSpeed = BASE_WALK_SPEED * mult end
+	local mf = _G.MovementFlow
+	if not mf then return end
+	local W = movementCfg.FlowWeights or { Crouch = 20, Sprint = 10 }
+
+	if stateName == "Crouch" then
+		mf.clear(player, "Sprint")
+		mf.set(player, "Crouch", W.Crouch, customMult or SPEED_MULT.Crouch)
+	elseif stateName == "Sprint" then
+		mf.clear(player, "Crouch")
+		mf.set(player, "Sprint", W.Sprint, customMult or SPEED_MULT.Sprint)
+	else -- "Normal": stop claiming anything, and let whatever else is live decide.
+		mf.clear(player, "Crouch")
+		mf.clear(player, "Sprint")
 	end
 end
 
@@ -141,12 +158,11 @@ local function setupPlayer(player)
 		local s = getPS(player)
 		if s then s.isCrouching = false end
 		char:SetAttribute("CrouchActive", false)
-		local hum = char:WaitForChild("Humanoid", 5)
-		if hum then
-			hum.WalkSpeed = BASE_WALK_SPEED
-			-- Jump left entirely on Roblox's own defaults: the momentum-scaled JumpPower
-			-- and slide-jump shove that needed UseJumpPower=true went with the teardown.
-		end
+		-- The direct `hum.WalkSpeed = BASE_WALK_SPEED` that used to live here is gone.
+		-- MovementFlow resets its own lineup on CharacterAdded and resolves from it, so a
+		-- fresh character starts at base without anyone asserting a raw number -- and it
+		-- cannot desync from the speed system the way a direct write did.
+		-- Jump is owned by MovementFlow too now (it sets UseJumpPower explicitly).
 	end)
 end
 

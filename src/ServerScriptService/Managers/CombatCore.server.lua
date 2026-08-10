@@ -54,27 +54,30 @@ end
 -- REAL -- speed pipeline (carried over verbatim from the old CombatManager)
 --=============================================================================
 
-local function healthSpeedMult(player)
-	local char = player.Character; if not char then return 1 end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum or hum.MaxHealth <= 0 then return 1 end
-	local frac = hum.Health / hum.MaxHealth
-	if frac >= LOW_HEALTH_SPEED_THRESHOLD then return 1 end
-	local t = math.max(0, frac) / LOW_HEALTH_SPEED_THRESHOLD
-	return LOW_HEALTH_MIN_MULT + (1 - LOW_HEALTH_MIN_MULT) * t
-end
+--[[ THE SPEED PIPELINE MOVED (2026-08-10) to Managers.MovementFlow.
 
-local function injurySpeedMult(player) local im=_G.InjuryManager; return im and im.getSpeedMultiplier(player) or 1 end
-local function rageSpeedMult(player)   local rm=_G.RageManager;   return rm and rm.getSpeedMult(player) or 1 end
-local function casteSpeedMult(player)  local cm=_G.CasteManager;  return cm and cm.getMassaliaMovementMultiplier(player) or 1 end
+     This used to keep ONE multiplier per player and write
+         WalkSpeed = 16 * mult * health * injury * rage * caste
+     which meant guard, attack, stagger, crouch, sprint, the Swift talent and freeze all shared
+     a single slot and destroyed each other's values silently. Whichever source's restore got
+     skipped left its multiplier stuck forever -- the "attack and guard at once and you are
+     slowed permanently" bug.
 
+     MovementFlow replaces it with NAMED, WEIGHTED sources: the highest weight wins, ties go to
+     whoever registered first, and the four ambient scalars above became multipliers that scale
+     the winner rather than competing with it. Behaviour for a single source is identical; what
+     changes is that removing one source can no longer disturb another.
+
+     These two functions survive ONLY as deprecated shims, so any caller that was missed keeps
+     working instead of silently doing nothing. They register a single low-priority "Legacy"
+     setter. New code must call _G.MovementFlow.set / .clear with its own name. ]]
 local function setSpeed(player, mult)
-	local char = player and player.Character; if not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return end
-	local s = pState[player.UserId]; if s then s.speedMult = mult end
-	hum.WalkSpeed = BASE_WALK_SPEED * mult
-		* healthSpeedMult(player) * injurySpeedMult(player)
-		* rageSpeedMult(player)   * casteSpeedMult(player)
+	local mf = _G.MovementFlow
+	if not mf then return end
+	local s = pState[player and player.UserId]; if s then s.speedMult = mult end
+	-- Weight 1 sits just above Default (0) so a legacy caller still beats the resting entry
+	-- but loses to every real state -- a stray legacy write can no longer stomp a stagger.
+	mf.set(player, "Legacy", 1, mult, nil)
 end
 
 --=============================================================================
@@ -140,7 +143,13 @@ local CombatCore = {}
 
 -- REAL --------------------------------------------------------------------
 function CombatCore.setSpeed(player, mult) setSpeed(player, mult) end
-function CombatCore.refreshSpeed(player) local s = getPS(player); setSpeed(player, s and s.speedMult or 1) end
+-- Deprecated shim: re-reads the ambient scalars (health/injury/rage/caste/talent) and
+-- re-resolves. It no longer re-asserts a stored multiplier, because MovementFlow keeps every
+-- source registered -- there is nothing to re-assert.
+function CombatCore.refreshSpeed(player)
+	local mf = _G.MovementFlow
+	if mf and mf.refreshScalars then mf.refreshScalars(player) end
+end
 function CombatCore.applyDamage(hum, dmg, victimPlayer, sourceTag) return applyDamage(hum, dmg, victimPlayer, sourceTag) end
 
 -- Knockback is movement physics, not combat truth -- it lives in VelocityManager (movement

@@ -258,10 +258,15 @@ end
 -- directly here desyncs MovementManager's internal state machine from the real
 -- Humanoid value, which is what was causing movement to break for new characters.
 local function freeze(player, char)
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if hum then hum.JumpPower = 0 end
-	local cm = _G.CombatManager
-	if cm then cm.setSpeed(player, 0) end
+	-- ABSOLUTE, and at the top weight: a frozen player must not be movable by any buff,
+	-- passive or scalar, so this setter opts out of the modifier and multiplier layers
+	-- entirely. Jump goes through the same key -- the raw JumpPower write that used to live
+	-- here was silently dead anyway, because nothing set UseJumpPower until MovementFlow did.
+	local mf = _G.MovementFlow
+	if mf then
+		local W = require(game:GetService("ReplicatedStorage").Shared.Config).Movement.FlowWeights
+		mf.set(player, "Freeze", W.Freeze, 0, 0, { absolute = true })
+	end
 	for _, part in ipairs(char:GetDescendants()) do
 		if part:IsA("BasePart") then part.Transparency = 1 end
 		if part:IsA("Decal") then part.Transparency = 1 end
@@ -269,10 +274,11 @@ local function freeze(player, char)
 end
 
 local function unfreeze(player, char)
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if hum then hum.JumpPower = 50 end
-	local cm = _G.CombatManager
-	if cm then cm.setSpeed(player, 1) end
+	-- Release the key rather than asserting "speed 1, jump 50". Restoring constants is what
+	-- made this erase a live injury or rage slow; clearing lets whatever is actually true
+	-- resolve on its own.
+	local mf = _G.MovementFlow
+	if mf then mf.clear(player, "Freeze") end
 	for _, part in ipairs(char:GetDescendants()) do
 		if part:IsA("BasePart") then part.Transparency = 0 end
 		if part:IsA("Decal") then part.Transparency = 0 end
