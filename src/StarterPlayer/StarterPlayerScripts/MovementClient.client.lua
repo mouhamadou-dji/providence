@@ -86,7 +86,6 @@ local sprintActive  = false
 local isDashing     = false
 local dashToken     = 0
 local dashCooldownUntil = 0
-local lastDashAt    = 0 -- drives the rusty window; 0 = no dash yet this character
 
 local isSliding      = false
 local slideVec       = Vector3.zero
@@ -636,16 +635,10 @@ local function startDash()
 	-- standing dodge read as a launch.
 	local speed = dashSpeedFor(flatSpeed()) * (grounded and 1 or (DASHCFG.AirForceMult or 0.7))
 
-	-- RUSTY WINDOW: dashing the moment the cooldown lifts still fires, but shorter. Full
-	-- power only returns Cooldown + RustyWindow after the previous dash, so chain-dashing
-	-- costs reach rather than being refused outright.
-	local now = tick()
-	if lastDashAt > 0 and (now - lastDashAt) < (DASHCFG.Cooldown or 0.5) + (DASHCFG.RustyWindow or 0.5) then
-		speed = speed * (DASHCFG.RustyDistanceMult or 0.75)
-	end
-	lastDashAt = now
-
-	dashCooldownUntil = tick() + (DASHCFG.Cooldown or 0.5)
+	-- The RUSTY WINDOW (a dash inside Cooldown + RustyWindow fired at reduced distance) was
+	-- removed 2026-08-10 -- dev: "no more half dashes." Every dash that fires is now a full
+	-- dash; the flat 1.0s cooldown is the whole gate.
+	dashCooldownUntil = tick() + (DASHCFG.Cooldown or 1.0)
 	isDashing = true
 	dashToken += 1
 	dashLaunchSpeed = speed
@@ -938,7 +931,6 @@ local function acquire(char)
 	isDashing = false
 	dashToken += 1 -- invalidates any in-flight endDash from the previous character
 	dashCooldownUntil = 0
-	lastDashAt = 0
 	dashLaunchSpeed, dashDir = 0, nil
 	isSliding = false
 	slideVec = Vector3.zero

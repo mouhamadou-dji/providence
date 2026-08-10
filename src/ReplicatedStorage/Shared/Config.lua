@@ -128,25 +128,35 @@ Config.Melee = {
 	-- 0.60s long, so leaving the cooldown at 0.5 would let the next swing start while the
 	-- previous hitbox was still open -- the new swing's token would silently kill the old
 	-- one mid-flight.
-	SwingCooldown  = 0.71, -- the chain's rhythm. Clicking faster never swings faster.
+	-- Doubled from the original 0.5 alongside the swing below, so the chain keeps the same
+	-- relative rhythm. It also has to stay above Windup + ActiveWindow (0.84) or the next
+	-- swing would start while the previous hitbox was still open, and the new swing's token
+	-- would kill the old one mid-flight. The harness asserts that.
+	SwingCooldown  = 1.00, -- the chain's rhythm. Clicking faster never swings faster.
 
 	-- TELEGRAPH. The hitbox does not exist during this -- it is the window in which a
 	-- defender reads the level and commits. The old stack ended up at 32 frames (0.53s)
 	-- after four separate bumps, all in the same direction, because the hitbox kept arriving
 	-- before anyone could react.
 	--
-	-- SLOWED 2026-08-10 (dev: "hard to react"): both this and ActiveWindow are divided by
-	-- 0.7, stretching the whole swing to ~1.43x its old length. The ANIMATION follows
-	-- automatically -- CombatClient time-scales each clip to Windup + ActiveWindow, so a
-	-- longer swing plays the same clip at 0.7x speed with no separate multiplier to keep in
-	-- sync. Landing at 0.43 also puts this within sight of the old stack's hard-won 0.53.
-	Windup = 0.43,
+	-- SLOWED 2026-08-10 (dev: "hard to react"), in two passes: first to 0.43, then to this.
+	-- The figure that matters is the TOTAL -- attacks now run at HALF their original speed,
+	-- so Windup and ActiveWindow are simply the original 0.30 / 0.12 doubled.
+	--
+	-- The ANIMATION follows automatically: CombatClient time-scales each clip to
+	-- Windup + ActiveWindow, so a swing twice as long plays the same clip at 0.5x with no
+	-- separate multiplier to keep in sync.
+	--
+	-- 0.60 is also comfortably past the old stack's hard-won 0.53, which it reached after
+	-- four separate bumps all in this direction -- so this is the well-trodden side of that
+	-- tuning, not new ground.
+	Windup = 0.60,
 
 	-- ACTIVE FRAMES, not one instant. The hitbox is polled every frame across this window
 	-- and a victim can only be caught once per swing. The archived system recorded that a
 	-- single-frame check "read as 'the hitbox is behind me'" whenever either fighter kept
 	-- moving mid-swing -- this window is that bug's fix, kept.
-	ActiveWindow = 0.17,
+	ActiveWindow = 0.24,
 
 	-- Box swept from the attacker's root. Reach = offset.Z + size.Z/2 = 5.5 studs.
 	HitboxSize   = Vector3.new(5, 5, 5),
@@ -448,15 +458,16 @@ Config.Movement = {
 		-- "punishable tail" from the 0.44 pass is gone; a dash is once more invulnerable
 		-- start to finish.
 		Duration      = 0.22, -- distance = speed * Duration, constant at ANY framerate
-		Cooldown      = 0.50, -- scaled by TalentManager.getModifier(p, "DashCooldownMult")
+		-- A FLAT 1.0s (2026-08-10, dev: "just make it stay 1s, no more half dashes"). This is
+		-- the same 1.0s it effectively took to get a full-power dash under the old rusty
+		-- window -- the difference is that the intervening window no longer hands you a
+		-- weakened dash, it hands you nothing. Every dash that fires is now a full dash.
+		Cooldown      = 1.00, -- scaled by TalentManager.getModifier(p, "DashCooldownMult")
 		StaminaCost   = 6,
-		-- RUSTY WINDOW (2026-08-09). Dashing the instant the cooldown lifts is allowed but
-		-- WEAKER: for RustyWindow seconds past the cooldown, distance is cut to
-		-- RustyDistanceMult. Full power only returns Cooldown + RustyWindow after the last
-		-- dash (0.5 + 0.5 = 1.0s), so chain-dashing costs reach instead of being refused --
-		-- the same "worse, not denied" contract the dodge-stock tiers use.
-		RustyWindow        = 0.50,
-		RustyDistanceMult  = 0.75,
+		-- The RUSTY WINDOW (dashing early for RustyDistanceMult of the distance) was removed
+		-- here, along with its branch in MovementClient.startDash. Recorded rather than left
+		-- as dead config: it existed so chain-dashing cost reach instead of being refused,
+		-- which is exactly the trade the dev decided against.
 		-- AIR DASH IS BLOCKED (2026-08-09, dev's call): dash is ground-only now, refused on
 		-- both sides (MovementClient.startDash and MovementSystem.processDash "airborne").
 		-- AirForceMult is therefore dead for players; kept only because MovementSystem's
