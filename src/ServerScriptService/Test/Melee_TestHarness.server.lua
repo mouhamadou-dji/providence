@@ -260,6 +260,25 @@ test("T13b_DashIframeCoverage", function()
 		"i-frames should cover the whole dash again at this duration")
 end)
 
+test("T13c_ReactionAnimsAreCoherent", function()
+	local RA = MCFG.ReactionAnims
+	assert(RA, "Config.Melee.ReactionAnims is missing -- combat would have no reactions at all")
+	-- The guard HOLD is the one entry whose absence is both silent and unmissable: with no pose
+	-- a raised guard is invisible, and the level read this entire system is built on is a read
+	-- of body language. Every other entry may legitimately be an unauthored placeholder --
+	-- CombatClient skips those and falls back.
+	assert(type(RA.Guard) == "string" and RA.Guard ~= "" and RA.Guard ~= "rbxassetid://0",
+		"ReactionAnims.Guard must be authored -- a guard with no pose is an invisible guard")
+	-- Both sets are indexed by chain hit, so a full chain must not run off the end of either.
+	-- Longer than ChainMax is fine: both carry the old stack's five clips.
+	for _, name in ipairs({ "Parried", "GotHit" }) do
+		local list = RA[name]
+		assert(type(list) == "table" and #list >= MCFG.ChainMax,
+			("ReactionAnims.%s has %d clips but ChainMax is %d -- a late chain hit would have"
+				.. " no reaction"):format(name, (type(list) == "table") and #list or 0, MCFG.ChainMax))
+	end
+end)
+
 -- ── Live ───────────────────────────────────────────────────────────────────
 
 local MC = waitFor("CombatSystem", 10)

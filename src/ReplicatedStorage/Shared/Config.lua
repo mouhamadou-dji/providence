@@ -268,6 +268,51 @@ Config.CombatAnims = {
 	GuardBroken    = {"rbxassetid://90600493268409"},  -- reaction pose on posture break
 }
 
+-- ─── MELEE REACTION CLIPS (2026-08-10) ───────────────────────────────────────
+-- The presentation half of Config.Melee: the guard hold pose and the one-shot reactions.
+-- Attached DOWN HERE rather than inside the Config.Melee literal above because it reuses the
+-- Config.CombatAnims arrays -- one set of ids feeding both the player's client-side
+-- reactions and NPCManager's server-driven mirror, so the two cannot drift the way the
+-- mirrored-constant bugs did before.
+--
+-- CombatClient skips any entry that is "" or rbxassetid://0 (the house placeholder-skip
+-- convention) and falls back rather than freezing the rig on a track that plays nothing.
+Config.Melee.ReactionAnims = {
+	-- The guard HOLD. Looped, and the only clip here that persists rather than firing once.
+	-- Recovered from the archived MovementController, where blocking used to be a locomotion
+	-- state (ServerStorage._OldMovement_2026_08_04.Client.MovementController, ANIMS.block).
+	Guard = "rbxassetid://107606771251321",
+
+	-- LOW GUARD -- unauthored, and the one clip whose absence is actually felt. The standing
+	-- Guard pose above is a full-body R6 clip at Action2, so it overrides MovementController's
+	-- crouch pose (Action) outright: a low guard currently LOOKS like a high guard, which is
+	-- exactly the read the whole level mechanic is built on. CombatClient falls back to the
+	-- standing clip for now -- a guard that is invisible would be worse than one that is
+	-- mislabelled -- so authoring this is a one-id change, no code.
+	GuardLow = "rbxassetid://0", -- PLACEHOLDER_ANIMATION: low/crouched guard hold
+
+	-- The parry FLASH, played the instant the guard goes up (the window is the opening frames
+	-- of the guard, so this is what a parry attempt looks like whether or not it catches).
+	Parry = Config.CombatAnims.M1Parry[1],
+
+	-- The attacker's recoil when their swing is parried, indexed by chain hit -- the same
+	-- attacker/victim split the archived CombatManager used ("M1Parried" to the attacker,
+	-- "M1Parry" to the one who read it).
+	Parried = Config.CombatAnims.M1Parried,
+
+	-- The victim's flinch, indexed by chain hit so a 4-hit chain reads as four distinct
+	-- reactions instead of the same twitch four times.
+	GotHit = Config.CombatAnims.M1GotHit,
+
+	-- Guard collapse: fired when a block lands that the defender cannot pay the stamina for.
+	GuardBreak = Config.CombatAnims.GuardBroken[1],
+
+	-- Generic stagger (parry stagger supplies its own clip via Parried above, so this covers
+	-- staggers from everything else -- wolves, mods, future sources). Unauthored: CombatClient
+	-- falls back to GuardBreak, which is the closest authored "you got rocked" pose.
+	Stagger = "rbxassetid://0", -- PLACEHOLDER_ANIMATION: generic stagger
+}
+
 Config.Speed = {
 	Base = 16,
 	Sprint = 25,

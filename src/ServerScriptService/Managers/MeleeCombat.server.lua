@@ -268,7 +268,15 @@ local function isActionBlocked(player)
 end
 
 -- ── Stagger ───────────────────────────────────────────────────────────────
-local function applyStagger(player, duration)
+--[[ `cause` is PRESENTATION ONLY and never changes what a stagger does. A stagger caused by
+     a parry already has the attacker's dedicated Parried recoil clip arriving from
+     fireExchange a moment later, so the client is told the cause and skips the generic
+     stagger pose rather than starting two clips back to back over the same 0.8s.
+
+     Optional and THIRD, so the (player, duration) call sites on the registered surface --
+     CombatCore's delegate and anything reaching it through _G.CombatManager -- are untouched
+     and keep the generic pose. ]]
+local function applyStagger(player, duration, cause)
 	local s = getPS(player)
 	if not s then return end
 	duration = duration or MCFG.ParryStagger
@@ -280,7 +288,7 @@ local function applyStagger(player, duration)
 	s.chain = Model.newChain()
 	setCombatState(player, "Staggered")
 	setSpeed(player, MCFG.StaggerSpeedMult)
-	fireEvent(player, { kind = "Staggered", duration = duration })
+	fireEvent(player, { kind = "Staggered", duration = duration, cause = cause })
 	task.delay(duration, function()
 		local cur = getPS(player)
 		if not cur or os.clock() < cur.staggeredUntil then return end
@@ -308,6 +316,12 @@ local function startGuard(player)
 	setSpeed(player, MCFG.GuardSpeedMult)
 	local ms = _G.MovementSystem
 	if ms and ms.stopSprint then ms.stopSprint(player) end
+	-- THE GUARD POSE IS SERVER-CONFIRMED, never predicted on the press. startGuard refuses
+	-- outright when the player is dead, staggered or in hitstun, and a client that painted the
+	-- pose optimistically on mouse-down would stand there visibly guarding while the server let
+	-- every hit through -- the worst possible lie for a mechanic read off body language.
+	-- Fired BEFORE startParry so the hold is up before the parry flash plays over it.
+	fireEvent(player, { kind = "Guard", level = s.guardLevel })
 	-- THE PARRY IS THE FIRST FRAMES OF THE GUARD. Opening it here rather than on a separate
 	-- input is the whole responsiveness fix: the window now begins the instant the button
 	-- goes down, instead of waiting for a tap to complete.
@@ -319,6 +333,10 @@ local function endGuard(player)
 	if not s or not s.guarding then return end
 	s.guarding = false
 	s.guardLevel = nil
+	-- Unconditional, and that matters: endGuard is also called SERVER-SIDE when a block
+	-- collapses on empty stamina, and the client has no other way to learn about that one.
+	-- Without this the pose would stay up on a guard that no longer exists.
+	fireEvent(player, { kind = "GuardEnd" })
 	if s.combatState == "Blocking" then
 		setCombatState(player, "Idle")
 		setSpeed(player, 1)
@@ -433,12 +451,14 @@ local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 			-- makes mashing expensive, so landing the read must not also be taxed.
 			vs.parryCooldownUntil = os.clock() + (MCFG.ParryCooldown or 0)
 		end
-		applyStagger(attacker, MCFG.ParryStagger)
+		applyStagger(attacker, MCFG.ParryStagger, "Parried")
 		playParrySound(vHRP)
 		-- Both sides hear it: the attacker needs to know they were read, not just punished.
 		local aHRP = attackerChar and attackerChar:FindFirstChild("HumanoidRootPart")
 		if aHRP and aHRP ~= vHRP then playParrySound(aHRP) end
-		fireExchange("Parried", attacker, victimPlayer, { level = level })
+		-- hitNum rides along so the attacker's recoil clip indexes by chain hit, exactly as the
+		-- archived stack did (RE_PlayCombatAnim:FireClient(attacker, "M1Parried", chainCount)).
+		fireExchange("Parried", attacker, victimPlayer, { level = level, hit = hitNum })
 		return
 	end
 
@@ -454,7 +474,11 @@ local function applyOutcome(outcome, atk, victimChar, victimPlayer, hum)
 			fireExchange("Blocked", attacker, victimPlayer, { level = level })
 			return
 		end
-		endGuard(victimPlayer) -- out of stamina: the guard collapses and the hit lands
+		-- Out of stamina: the guard collapses and the hit lands. The cue goes out BEFORE
+		-- endGuard so "GuardBreak" arrives ahead of the plain "GuardEnd" that endGuard fires --
+		-- reversed, the collapse would read as an ordinary button release.
+		fireEvent(victimPlayer, { kind = "GuardBreak" })
+		endGuard(victimPlayer)
 	end
 
 	-- HIT. Damage goes through CombatCore's funnel, which owns godmode, meditation immunity,
@@ -755,7 +779,14 @@ MeleeCombat.checkBlockHit     = function(player, _attacker, _attackType)
 	-- The mob path: mobs do not carry a level, so a guard stops them outright. Returning
 	-- `true` means fully absorbed, matching what NPCManager expects.
 	local s = getPS(player)
-	return s ~= nil and s.guarding == true
+	local absorbed = s ~= nil and s.guarding == true
+	if absorbed then
+		-- Mob hits never reach applyOutcome, so this is the ONLY place a wolf's or an NPC's
+		-- blocked swing can produce a re-brace on the defender. Player-side only: the mob's own
+		-- reaction is its manager's business, and PlayCombatAnim stays retired.
+		fireEvent(player, { kind = "Blocked", role = "victim" })
+	end
+	return absorbed
 end
 MeleeCombat.isParrying        = function(player)
 	local s = getPS(player)

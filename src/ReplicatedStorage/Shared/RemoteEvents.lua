@@ -45,7 +45,12 @@ RemoteEvents.RequestSwing    = getOrCreate("RequestSwing")    -- client -> serve
 RemoteEvents.RequestGuard    = getOrCreate("RequestGuard")    -- client -> server: (no payload) begin guarding
 RemoteEvents.RequestGuardEnd = getOrCreate("RequestGuardEnd") -- client -> server: (no payload) stop guarding
 RemoteEvents.RequestParry    = getOrCreate("RequestParry")    -- client -> server: (no payload) tap parry
-RemoteEvents.OnMeleeEvent    = getOrCreate("OnMeleeEvent")    -- server -> client: {kind="Swing"|"Hit"|"Blocked"|"Parried"|"ParryWhiff"|"Staggered"|"Denied", role="attacker"|"victim", level?, hit?, reason?, attackerName?, victimName?}
+-- OnMeleeEvent carries the PRESENTATION for the whole system -- the reaction animations added
+-- 2026-08-10 ride on it rather than on a resurrected PlayCombatAnim (see the retirement note
+-- above). Guard/GuardEnd/GuardBreak exist because the guard POSE is server-confirmed: the
+-- server can refuse a guard, and it can also end one on its own when a block collapses on
+-- empty stamina, and the client has no way to learn about either without being told.
+RemoteEvents.OnMeleeEvent    = getOrCreate("OnMeleeEvent")    -- server -> client: {kind="Swing"|"Hit"|"Blocked"|"Parried"|"ParryWhiff"|"Staggered"|"Denied"|"Parry"|"Guard"|"GuardEnd"|"GuardBreak", role="attacker"|"victim", level?, hit?, duration?, cause?, reason?, attackerName?, victimName?}
 -- OnGrabbed (the aerial grab-and-drag) was declared, built, and pulled the same session,
 -- 2026-08-09 pt3 -- dev's call: "doing too much." Left out on purpose, same reason the
 -- retired combat remotes above stay out: getOrCreate would resurrect it as an orphan

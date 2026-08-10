@@ -6,10 +6,11 @@
 	decide whether a swing lands, what level it was, or whether a guard held: every one of
 	those is answered on the server, and every remote below is fired WITH NO PAYLOAD.
 
-	In particular the LEVEL is never sent. This script reads MoveState only to pick which
-	animation to play; the server derives the real level from its own replicated crouch/slide
-	state. If the two ever disagree the server wins and the animation is simply the wrong
-	one -- which is a cosmetic bug, not an exploit.
+	In particular the LEVEL is never sent. The server derives it from its own replicated
+	crouch/slide state and hands it BACK on the guard and parry events, so the pose this
+	script picks is the level the server actually latched rather than a local guess at it.
+	(It used to guess, off the MoveState attribute. The guess was only ever cosmetic, but a
+	value the server is already sending is strictly better than one we re-derive.)
 
 	BINDS: LMB = swing. RMB = guard, held for as long as you hold the button.
 
@@ -23,10 +24,22 @@
 	ANIMATION PRIORITY IS Action2, NOT Action. MovementController's suppressForeignTracks
 	stops every foreign track at Action or below on each RenderStepped frame -- that is
 	exactly what made the old critical animations play for a single frame and vanish.
+
+	THE REACTION LAYER (2026-08-10). Until now this script played swing clips and nothing
+	else: a guard was invisible, a parry looked identical to a block, and being hit moved
+	nobody. Everything a fight does to a body now has a clip, driven ENTIRELY by server
+	events -- the guard pose included. Nothing here is predicted off the local button press,
+	because startGuard can refuse (dead, staggered, in hitstun) and a body visibly guarding
+	while the server lets every hit through is the worst lie this game could tell.
+
+	The clips are Config.Melee.ReactionAnims. Unauthored entries ("" or rbxassetid://0) are
+	treated as ABSENT and fall back, per the house placeholder-skip convention -- so a
+	half-authored set degrades instead of freezing the rig on a track that plays nothing.
 ]]
 
 local Players           = game:GetService("Players")
 local UIS               = game:GetService("UserInputService")
+local RunService        = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
@@ -45,49 +58,176 @@ local RE_GuardEnd = remotes:WaitForChild("RequestGuardEnd", 10)
 -- future dedicated parry input, but the client never fires it.
 local RE_Event    = remotes:WaitForChild("OnMeleeEvent", 10)
 
-local character, hum, animator
-local tracks = {}
+local hum, animator
 
-local guardActive = false
+--[[ THREE LAYERS, and the priorities are the whole design:
+
+       Action2  swing clips        -- what you are doing
+       Action2  the guard HOLD     -- what you are doing, but persistent
+       Action3  one-shot reactions -- what just happened TO you
+
+     Reactions sit a full step above so a flinch, a recoil or a guard break visibly
+     interrupts whatever the body was part-way through instead of blending into it.
+
+     The hold shares Action2 with the swings, which WOULD fight if both ever played at once,
+     so it is suppressed for as long as any swing or reaction runs and restored by the
+     Heartbeat driver the moment they finish. Suppressed, not cancelled: the server lets you
+     swing out of a guard and the guard is still up underneath.
+
+     Nothing here may sit at Action or below -- see the header. ]]
+local PRI_SWING    = Enum.AnimationPriority.Action2
+local PRI_POSE     = Enum.AnimationPriority.Action2
+local PRI_REACTION = Enum.AnimationPriority.Action3
+
+local RA = MCFG.ReactionAnims or {}
+
+local tracks = {}      -- swing clips, indexed by chain hit
+local reacts = {}      -- name -> track, or an array of tracks for the per-hit sets
+
+local guardActive = false   -- the local BUTTON state (what we have told the server)
+local poseHeld    = false   -- the guard the SERVER confirmed. Never the same question.
+local poseLevel   = nil
+local poseTrack   = nil     -- the hold currently playing, if any
+local reactTrack  = nil     -- the one-shot currently playing, if any
+local guardBrokeAt = 0      -- see the Hit handler: a break swallows the flinch behind it
 
 -- ── Animation ─────────────────────────────────────────────────────────────
+-- An unauthored id is treated as ABSENT so the caller falls back, rather than loading a track
+-- that plays nothing and freezes the rig on it. Same convention MovementController uses.
+local function isPlaceholder(id)
+	return type(id) ~= "string" or id == "" or id == "rbxassetid://0"
+end
+
+local function loadClip(anim, id, looped, priority)
+	if not anim or isPlaceholder(id) then return nil end
+	local a = Instance.new("Animation")
+	a.AnimationId = id
+	local ok, t = pcall(function() return anim:LoadAnimation(a) end)
+	if not ok or not t then return nil end
+	t.Priority = priority
+	t.Looped = looped
+	return t
+end
+
+local function loadList(anim, ids, priority)
+	local out = {}
+	for i, id in ipairs(ids or {}) do out[i] = loadClip(anim, id, false, priority) end
+	return out
+end
+
 local function loadTracks(anim)
-	tracks = {}
+	tracks, reacts = {}, {}
+	poseTrack, reactTrack = nil, nil
 	if not anim then return end
+
 	for i, id in ipairs(MCFG.Anims or {}) do
-		local a = Instance.new("Animation")
-		a.AnimationId = id
-		local ok, t = pcall(function() return anim:LoadAnimation(a) end)
-		if ok and t then
-			-- Action2, deliberately: see the header. Action or below is stopped every frame
-			-- by MovementController while any locomotion clip is playing.
-			t.Priority = Enum.AnimationPriority.Action2
-			t.Looped = false
-			tracks[i] = t
-		end
+		tracks[i] = loadClip(anim, id, false, PRI_SWING)
+	end
+
+	-- The hold is the only LOOPED clip here; everything else fires once.
+	reacts.guard      = loadClip(anim, RA.Guard, true, PRI_POSE)
+	-- A low guard shown in the wrong stance is bad; a guard shown as nothing at all is worse,
+	-- so this falls back to the standing hold until the clip exists. See
+	-- Config.Melee.ReactionAnims.GuardLow for why that fallback is a known compromise.
+	reacts.guardLow   = loadClip(anim, RA.GuardLow, true, PRI_POSE) or reacts.guard
+	reacts.parry      = loadClip(anim, RA.Parry, false, PRI_REACTION)
+	reacts.guardBreak = loadClip(anim, RA.GuardBreak, false, PRI_REACTION)
+	reacts.stagger    = loadClip(anim, RA.Stagger, false, PRI_REACTION) or reacts.guardBreak
+	reacts.parried    = loadList(anim, RA.Parried, PRI_REACTION)
+	reacts.gotHit     = loadList(anim, RA.GotHit, PRI_REACTION)
+end
+
+-- Pick the clip for a chain hit, tolerating a nil or out-of-range hit number and a
+-- half-authored list (a missing entry falls back to whatever the first slot holds).
+local function clipFor(list, hit)
+	if not list or #list == 0 then return nil end
+	return list[math.clamp(tonumber(hit) or 1, 1, #list)] or list[1]
+end
+
+local function stopSwings(fade)
+	for _, t in pairs(tracks) do
+		if t.IsPlaying then t:Stop(fade or 0.05) end
+	end
+end
+
+local function anySwingPlaying()
+	for _, t in pairs(tracks) do
+		if t.IsPlaying then return true end
+	end
+	return false
+end
+
+--[[ Start a clip at a speed that makes it LAST exactly `fitTo` seconds.
+
+     Every window in this system is a server-side number -- the windup, the parry window, the
+     hitstun, the stagger -- and a clip authored to a different length either keeps playing
+     after the player has control back or leaves them posed and idle inside a stun they can
+     still feel. Guarded on Length, which is 0 until the asset finishes streaming.
+
+     Restarting is done by hand rather than by Play(): Play on an already-playing track is a
+     no-op, so the second flinch of a chain would never show. ]]
+local function startFitted(track, fitTo)
+	local speed = 1
+	if fitTo and fitTo > 0 and track.Length > 0 then speed = track.Length / fitTo end
+	if track.IsPlaying then
+		track.TimePosition = 0
+		track:AdjustSpeed(speed)
+	else
+		track:Play(0.05, 1, speed)
 	end
 end
 
 local function playSwing(hitNum)
 	local t = tracks[hitNum]
 	if not t then return end
+	-- A swing is a deliberate action and outranks whatever reaction was still finishing.
+	if reactTrack and reactTrack.IsPlaying then reactTrack:Stop(0.05) end
+	reactTrack = nil
 	for i, other in pairs(tracks) do
 		if i ~= hitNum and other.IsPlaying then other:Stop(0.05) end
 	end
-	t:Play(0.05)
-	-- Time-scale the clip into the swing so it always completes: windup plus active frames is
-	-- the real length of a swing, and a clip authored longer than that would otherwise be cut
-	-- off partway. Guarded on Length, which is 0 until the asset finishes loading.
-	local swingLen = (MCFG.Windup or 0.3) + (MCFG.ActiveWindow or 0.12)
-	if t.Length > 0 and swingLen > 0 then t:AdjustSpeed(t.Length / swingLen) end
+	-- Windup plus active frames is the real length of a swing.
+	startFitted(t, (MCFG.Windup or 0.3) + (MCFG.ActiveWindow or 0.12))
 end
 
--- ── Level intent (COSMETIC ONLY) ──────────────────────────────────────────
--- Read from the same MoveState vocabulary the server derives its own answer from, so the two
--- agree in every normal case -- but this value is never transmitted.
-local function localLevel()
-	local ms = character and character:GetAttribute("MoveState")
-	return Model.levelFromState(ms)
+-- Reactions outrank the hold: drop the pose so the two never blend, and let updatePose put it
+-- back once this finishes.
+local function playReaction(track, fitTo)
+	-- The swing dies FIRST, and dies even when the clip turns out to be missing: the server has
+	-- already invalidated it, so an unauthored reaction must not leave a strike playing out
+	-- that cannot land.
+	stopSwings(0.05)
+	if not track then return end
+	if reactTrack and reactTrack ~= track and reactTrack.IsPlaying then reactTrack:Stop(0.05) end
+	if poseTrack and poseTrack.IsPlaying then poseTrack:Stop(0.05) end
+	poseTrack = nil
+	reactTrack = track
+	startFitted(track, fitTo)
+end
+
+local function poseClip()
+	if poseLevel == Model.Level.Low then return reacts.guardLow end
+	return reacts.guard
+end
+
+--[[ The hold is DRIVEN every frame rather than toggled on the guard events, for the same
+     reason MovementController resolves its locomotion clip every frame: the pose has to yield
+     to swings and reactions and come back on its own afterwards, and a toggle would need
+     every one of those exit paths to remember to restore it. ]]
+local function updatePose()
+	local busy = anySwingPlaying() or (reactTrack ~= nil and reactTrack.IsPlaying)
+	local alive = hum ~= nil and hum.Health > 0
+	local want = (poseHeld and alive and not busy) and poseClip() or nil
+	if poseTrack == want then return end
+	if poseTrack and poseTrack.IsPlaying then poseTrack:Stop(0.15) end
+	poseTrack = want
+	if want and not want.IsPlaying then want:Play(0.15) end
+end
+
+-- No dedicated block-impact clip exists, so an absorbed hit restarts the hold from frame 0:
+-- the guard visibly re-raises. It reads as taking the blow on the guard and costs no asset.
+local function rebrace()
+	if poseTrack and poseTrack.IsPlaying then poseTrack.TimePosition = 0 end
 end
 
 -- ── Input ─────────────────────────────────────────────────────────────────
@@ -123,13 +263,68 @@ end)
 if RE_Event then
 	RE_Event.OnClientEvent:Connect(function(payload)
 		if type(payload) ~= "table" then return end
-		if payload.kind == "Swing" then
+		local kind, role = payload.kind, payload.role
+
+		if kind == "Swing" then
 			playSwing(payload.hit or 1)
-		elseif payload.kind == "Staggered" then
-			-- Cut the swing clip: the server has already invalidated the swing, so letting the
-			-- animation play out would show a strike that cannot land.
-			for _, t in pairs(tracks) do
-				if t.IsPlaying then t:Stop(0.1) end
+
+		elseif kind == "Guard" then
+			-- Server-confirmed, which is why this is not set in requestGuard: startGuard
+			-- refuses outright when dead, staggered or in hitstun.
+			poseHeld, poseLevel = true, payload.level
+
+		elseif kind == "GuardEnd" then
+			poseHeld, poseLevel = false, nil
+
+		elseif kind == "Parry" then
+			-- The opening frames of the guard, played whether or not they end up catching
+			-- anything: the flash is what tells you the window opened at all.
+			poseLevel = payload.level
+			playReaction(reacts.parry, MCFG.ParryWindow)
+
+		elseif kind == "Parried" then
+			if role == "attacker" then
+				-- Read. The recoil is stretched over the whole stagger the server just applied,
+				-- so the body is still recovering for exactly as long as the input is dead.
+				playReaction(clipFor(reacts.parried, payload.hit), MCFG.ParryStagger)
+			end
+			-- role == "victim" deliberately does nothing: we are the one who read it, and the
+			-- parry flash from the "Parry" event is already on screen mid-follow-through.
+			-- Restarting it here would reset the clip at its most expressive moment.
+
+		elseif kind == "Blocked" then
+			if role ~= "attacker" then rebrace() end
+
+		elseif kind == "Hit" then
+			-- ROLE IS LOAD-BEARING. Both sides receive kind == "Hit"; keying on the kind alone
+			-- is exactly the bug the server's fireExchange header calls out, and here it would
+			-- have given the ATTACKER the victim's flinch on every landed swing.
+			--
+			-- A hit that arrives right behind a guard break is the SAME blow -- the guard
+			-- collapsed and it landed -- so the break clip keeps the body and the flinch is
+			-- dropped rather than cutting it off two frames in.
+			if role ~= "attacker" and (os.clock() - guardBrokeAt) > 0.2 then
+				playReaction(clipFor(reacts.gotHit, payload.hit), MCFG.HitLockout)
+			end
+
+		elseif kind == "GuardBreak" then
+			-- The guard collapsed under a block this player could not pay the stamina for. The
+			-- server's own GuardEnd is right behind this; setting the flag here too means the
+			-- pose drops on the same frame as the clip that replaces it.
+			poseHeld, poseLevel = false, nil
+			guardBrokeAt = os.clock()
+			playReaction(reacts.guardBreak, MCFG.HitLockout)
+
+		elseif kind == "Staggered" then
+			-- Cut the swing either way: the server has already invalidated it, so letting the
+			-- animation finish would show a strike that cannot land.
+			if payload.cause == "Parried" then
+				-- The Parried recoil is one event behind this and covers the same window with a
+				-- clip that actually shows what happened. Playing the generic pose first would
+				-- start two clips back to back over the same 0.8s.
+				stopSwings(0.1)
+			else
+				playReaction(reacts.stagger, payload.duration)
 			end
 		end
 	end)
@@ -137,19 +332,28 @@ end
 
 -- ── Character lifecycle ───────────────────────────────────────────────────
 local function acquire(char)
-	character = char
 	hum = char:WaitForChild("Humanoid", 10)
 	animator = hum and hum:WaitForChild("Animator", 10)
+	-- Every piece of pose state resets on SPAWN, not just on join -- the server's onCharacter
+	-- does the same, and for the same reason: dying mid-guard otherwise leaves the fresh
+	-- character holding a pose for a guard that no longer exists on either side.
 	guardActive = false
+	poseHeld, poseLevel = false, nil
+	poseTrack, reactTrack = nil, nil
+	guardBrokeAt = 0
 	if animator then
 		task.wait(0.1) -- same settle the locomotion loader uses before LoadAnimation
 		loadTracks(animator)
 	end
 end
 
+-- The hold's driver. Heartbeat rather than RenderStepped: this only starts and stops tracks,
+-- and none of it needs to run before the camera does.
+RunService.Heartbeat:Connect(updatePose)
+
 if player.Character then task.spawn(acquire, player.Character) end
 player.CharacterAdded:Connect(acquire)
 
 print(string.format(
-	"[CombatClient] Loaded -- LMB swing / RMB guard (first %.2fs are parry frames), %d clips",
+	"[CombatClient] Loaded -- LMB swing / RMB guard (first %.2fs are parry frames), %d swing clips",
 	MCFG.ParryWindow or 0.25, #(MCFG.Anims or {})))
