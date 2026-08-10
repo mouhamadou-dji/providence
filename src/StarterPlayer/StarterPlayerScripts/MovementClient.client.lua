@@ -82,7 +82,13 @@ local sanityTiers  = {}
 
 -- ── Local action state ─────────────────────────────────────────────────
 local sprintHeld    = false
+-- SERVER-CONFIRMED ONLY. Set by the "Sprint" MovState echo, cleared by "SprintEnd" -- never
+-- optimistically by the request itself, because the server refuses silently while any sprint
+-- lock is up and an optimistic flag would then never correct itself.
 local sprintActive  = false
+-- Next time the held-sprint retry is allowed to fire. Keeps the auto-resume from spamming
+-- the remote every frame for the whole duration of a swing.
+local sprintRetryAt = 0
 local isDashing     = false
 local dashToken     = 0
 local dashCooldownUntil = 0
@@ -704,6 +710,9 @@ end
      Guarded against a real dash or slide already owning the character: those are full
      commitments the player chose, and an attack-triggered push should not fight either. ]]
 local function startAttackDash()
+	-- NO COOLDOWN CHECK, deliberately: an attack dash is paid for by the swing, not by the
+	-- dash economy. It never reads dashCooldownUntil and never sets it, so lunging or
+	-- aerialing mid-dash-cooldown works and neither delays the other.
 	if not hum or not hrp or isDashing or isSliding then return end
 	local dir = Model.flatUnit(hrp.CFrame.LookVector)
 	if not dir then return end
@@ -1091,10 +1100,29 @@ RunService:BindToRenderStep("MovementClientStep", Enum.RenderPriority.Character.
 	-- sideways or backwards. There is deliberately no momentum prerequisite: with instant
 	-- acceleration you are at full walk on the first frame anyway, so gating on walkPower
 	-- would have been dead config that reads as live.
+	--[[ SPRINT KEEPS ASKING WHILE YOU KEEP HOLDING IT (fixed 2026-08-10).
+
+	     This used to latch `sprintActive = true` OPTIMISTICALLY the moment it fired the
+	     request. The server can refuse -- isSprintLocked is true the whole time you are
+	     attacking, guarding or staggered -- and it refuses SILENTLY, so the client sat there
+	     believing it was sprinting when it was not. That is the reported bug exactly: after
+	     sprint -> attack you kept the sprint ANIMATION (MoveState reads this flag) while
+	     having none of the speed (the server never raised the ceiling) and none of the
+	     lunges (the server's own isSprinting stayed false).
+
+	     Now the flag is set ONLY by the server's "Sprint" echo, so it can never disagree with
+	     reality, and the request simply repeats on an interval while the key is held. Once
+	     whatever blocked it clears -- an attack finishing, a stagger ending, standing out of
+	     a crouch -- the next retry lands and sprint resumes on its own. That generality is
+	     the point: it fixes every temporary sprint blocker, present and future, rather than
+	     teaching this loop about each one. ]]
 	if sprintHeld and not sprintActive and not isCrouching and grounded and targetDir then
 		local facing = Model.flatUnit(hrp.CFrame.LookVector)
-		if facing == nil or facing:Dot(targetDir) >= (MCFG.Sprint.MinForwardDot or 0.3) then
-			sprintActive = true -- optimistic; server confirms or silently drops it
+		if (facing == nil or facing:Dot(targetDir) >= (MCFG.Sprint.MinForwardDot or 0.3))
+			and tick() >= sprintRetryAt then
+			-- Rate-limited: without this the retry would fire the remote every frame while
+			-- any sprint lock is up, which is 60 requests a second for the whole of a swing.
+			sprintRetryAt = tick() + (MCFG.Sprint.RetryInterval or 0.2)
 			if RE_Sprint then RE_Sprint:FireServer() end
 		end
 	end
@@ -1137,6 +1165,7 @@ local function acquire(char)
 
 	state = Model.newState()
 	isCrouching, sprintHeld, sprintActive = false, false, false
+	sprintRetryAt = 0
 	isDashing = false
 	dashToken += 1 -- invalidates any in-flight endDash from the previous character
 	dashCooldownUntil = 0

@@ -471,6 +471,13 @@ Config.Movement = {
 		-- Sprint is DOUBLE-TAP W, held (2026-08-07 rebind, restoring the pre-teardown
 		-- scheme -- Shift is unbound). Two W presses inside this window arm it.
 		DoubleTapWindow = 0.30,
+		-- How often the client re-asks for sprint while the key is held but the server has
+		-- not granted it. The server refuses silently whenever a sprint lock is up (mid
+		-- attack, guard or stagger), so the client keeps asking and sprint resumes on its own
+		-- the moment the lock clears -- rather than the player having to release and re-tap W.
+		-- Rate-limited because otherwise this fires the remote every frame for the whole
+		-- duration of every swing.
+		RetryInterval = 0.20,
 	},
 
 	-- DASH -- distance SCALES WITH MOMENTUM (2026-08-05 pt3). It used to be a flat
@@ -535,12 +542,17 @@ Config.Movement = {
 		-- velocity stack's own decay="linear", because that decays to ZERO and this needs to
 		-- land at 75%.
 		--
-		-- Distance is the integral, not speed x duration: averaging (1 + 0.5)/2 = 0.75 over
-		-- 0.275s gives ~11.3 studs. Note that deepening the decel SHORTENS the dash even
-		-- though the duration is unchanged -- at 0.75 it reached ~13.2, and the old flat
-		-- dash covered 12.1. The server's displacement guard budgets speed * Duration * 1.5
-		-- = ~22.7 studs, so it stays comfortably inside either way.
-		EndSpeedMult  = 0.50,
+		-- 0.25 (2026-08-10): the dash sheds 75% of its launch speed by the end. Paired with
+		-- the +25% launch, that is a hard punch that settles quickly rather than a long
+		-- glide -- the shape asked for after the flat-feeling pass.
+		--
+		-- Distance is the integral, not speed x duration: averaging (1 + 0.25)/2 = 0.625 over
+		-- 0.275s at 68.75 gives ~11.8 studs -- close to the ~11.3 of the slower, gentler
+		-- tuning, but front-loaded. Deepening the decel SHORTENS the dash even though the
+		-- duration is unchanged, so speed and decel are the two dials that trade against each
+		-- other for reach. The server's displacement guard budgets speed * Duration * 1.5 =
+		-- ~28.4 studs, so it stays comfortably inside.
+		EndSpeedMult  = 0.25,
 
 		-- ATTACK DASH FLOW (2026-08-10, dev: "aerial and lunge is as if you did another dash
 		-- + attack"). Lunge and Aerial no longer have their own ForwardForce/decay-to-zero

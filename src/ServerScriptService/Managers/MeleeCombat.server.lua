@@ -667,24 +667,19 @@ local function movementContext(attacker, char, hum, hrp)
 	local ms = _G.MovementSystem
 	local sprinting = ms and ms.isSprinting and ms.isSprinting(attacker) or false
 	if not sprinting and hrp and not airborne then
-		--[[ ⚠ THE SPEED FALLBACK MUST EXCLUDE DASH AND SLIDE (fixed 2026-08-10).
+		--[[ ANY real speed counts, INCLUDING out of a dash or a slide (dev's call, restored
+		     2026-08-10 after being briefly narrowed).
 
-		     A dash moves at Dash.MaxSpeed (68.75) and a slide enters around 36 -- both far
-		     above this threshold -- so a bare speed check counted either as "sprinting" and
-		     turned the swing into a LUNGE. Since a lunge now launches its own attackDash,
-		     dashing and then attacking gave you a second dash you never asked for: the
-		     reported "the default dash turned into the aerial and lunge dash".
+		     Carrying momentum into a swing IS the lunge -- where that momentum came from does
+		     not matter. So dash-into-attack and slide-into-attack both produce a lunge, and
+		     since a lunge launches its own cooldown-free attackDash, chaining dash -> attack
+		     -> attack is a deliberate movement option rather than an accident.
 
-		     Only genuine locomotion should qualify. A player who is not sprinting, dashing or
-		     sliding cannot exceed BaseWalkSpeed (16), so anything past this really is a
-		     sprint the server has not been told about yet. ]]
-		local dashing = ms and ms.isDashing and ms.isDashing(attacker) or false
-		local sliding = ms and ms.isSliding and ms.isSliding(attacker) or false
-		if not dashing and not sliding then
-			local v = hrp.AssemblyLinearVelocity
-			local flat = Vector3.new(v.X, 0, v.Z).Magnitude
-			if flat >= (mcfg.LungeSpeedThreshold or 20) then sprinting = true end
-		end
+		     A player who is not sprinting, dashing or sliding cannot exceed BaseWalkSpeed
+		     (16), so anything past this threshold is real speed either way. ]]
+		local v = hrp.AssemblyLinearVelocity
+		local flat = Vector3.new(v.X, 0, v.Z).Magnitude
+		if flat >= (mcfg.LungeSpeedThreshold or 20) then sprinting = true end
 	end
 
 	return airborne, sprinting
