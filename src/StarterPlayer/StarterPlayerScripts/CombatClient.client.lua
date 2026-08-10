@@ -269,6 +269,15 @@ if RE_Event then
 
 		if kind == "Swing" then
 			playSwing(payload.hit or 1)
+			-- ATTACK DASH FLOW (2026-08-10): Lunge and Aerial launch the exact same
+			-- steerable, decelerating push MovementClient's real Q-dash uses, off the same
+			-- Config.Movement.Dash numbers -- "as if you did another dash + attack". The
+			-- server only NAMES the kind; MovementClient owns the physics, the same split
+			-- every other movement feel in this game keeps.
+			if (payload.attack == "Lunge" or payload.attack == "Aerial")
+				and _G.MovementClient and _G.MovementClient.attackDash then
+				_G.MovementClient.attackDash()
+			end
 
 		elseif kind == "Guard" then
 			-- Server-confirmed, which is why this is not set in requestGuard: startGuard

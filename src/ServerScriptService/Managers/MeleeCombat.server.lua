@@ -738,24 +738,15 @@ local function processSwing(attacker)
 	flowSet(attacker, "Windup", FW.Windup, MCFG.WindupSpeedMult or 1)
 	swungBindable:Fire(attacker) -- WolfManager read-parry hook
 
-	-- LUNGE AND AERIAL both carry you forward. Pushed as a velocity CONTRIBUTION rather than a
-	-- raw AssemblyLinearVelocity write (which the old stack used and which a client-owned
-	-- character overwrites on the next replication tick anyway), so it sums with any knockback
-	-- landing at the same moment instead of one clobbering the other.
-	local forwardCfg = MCFG[kind]
-	if forwardCfg and forwardCfg.ForwardForce then
-		if kind == Model.Kind.Lunge and ms and ms.stopSprint then ms.stopSprint(attacker) end
-		local vm = _G.VelocityManager
-		local dir = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
-		if vm and vm.pushPlayer and dir.Magnitude > 0.01 then
-			pcall(vm.pushPlayer, attacker, {
-				planar   = dir.Unit * forwardCfg.ForwardForce,
-				duration = MCFG.Windup,
-				decay    = "linear",
-				suppressInput = false, -- you keep steering through it; it is not a dash
-			})
-		end
-	end
+	-- LUNGE AND AERIAL both carry you forward -- since 2026-08-10 via the CLIENT'S OWN
+	-- attackDash (CombatClient, triggered off the "Swing" event below by `attack = kind`),
+	-- not a server-fired push. That switch is not a style choice: the flat push here used
+	-- decay="linear", which the velocity stack always decays to ZERO, and "as if you did
+	-- another dash" needs the real dash's steerable, decelerate-to-a-FRACTION flow -- which
+	-- only a per-frame client-side loop can do (the same reason the real dash's own decel is
+	-- hand-rolled rather than using decay="linear"). This block still owns the non-movement
+	-- half of the lunge: dropping the sprint state.
+	if kind == Model.Kind.Lunge and ms and ms.stopSprint then ms.stopSprint(attacker) end
 
 	local swingSounds = MCFG.SwingSounds or {}
 	if #swingSounds > 0 then

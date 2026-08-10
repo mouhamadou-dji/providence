@@ -650,6 +650,121 @@ local function updateDash(dt)
 	v.update("dash", dashVec)
 end
 
+--[[ ATTACK DASH FLOW (2026-08-10) -- Lunge and Aerial attacks launch one of these instead of
+     the flat server-fired push they used to have, so "sprint + attack" and "jump + attack"
+     genuinely feel like another dash chained into the swing.
+
+     A SEPARATE contribution ("atkDash") from the real Q-dash, not a reuse of it: it does not
+     touch dashToken/dashCooldownUntil/isDashing, so it never consumes dash cooldown or dash
+     stock and a real dash queued right after an attack is untouched by it. It vector-sums
+     with whatever else is live (a real dash, a slide, knockback) the same way every
+     contribution in this stack always has.
+
+     suppressInput mirrors the real dash (movement input is zeroed for the duration), but
+     unlike isDashing this does NOT hijack MoveState or early-return the frame loop -- the
+     combat system's own "Attacking" state and swing animation keep running untouched.
+     Knockback already proves this split works: a contribution can drive velocity without
+     owning presentation. ]]
+local atkDashActive   = false
+local atkDashVec      = Vector3.zero
+local atkDashDir      = nil
+local atkDashAimPrev  = nil
+local atkDashStartedAt = 0
+local atkDashLaunchSpeed = 0
+
+local function endAttackDash(inheritPower)
+	if not atkDashActive then return end
+	atkDashActive = false
+	local v = vc()
+	if v then v.cancel("atkDash") end
+	if inheritPower then
+		-- Same handback shape as the real dash's: carry a fraction of the ACTUAL end speed
+		-- (post-decel) into the movement model so it flows into a run instead of dead-stopping.
+		local ceiling = (hum and hum.WalkSpeed or MCFG.BaseWalkSpeed)
+		local exitSpeed = atkDashVec.Magnitude
+		if exitSpeed <= 0 then exitSpeed = atkDashLaunchSpeed end
+		local carried = exitSpeed * (DASHCFG.MomentumCarry or 0.25)
+		state.walkPower = math.clamp(math.max(state.walkPower, carried / math.max(1, ceiling)), 0, 1)
+		-- Aerial is airborne by definition, and walkPower alone barely steers a Humanoid in
+		-- the air, so the horizontal velocity needs handing back to the assembly directly --
+		-- the same handback the real dash and a ledge-exit slide both already do.
+		if hrp and atkDashDir and hum and hum.FloorMaterial == Enum.Material.Air then
+			hrp.AssemblyLinearVelocity = Vector3.new(
+				atkDashDir.X * carried, hrp.AssemblyLinearVelocity.Y, atkDashDir.Z * carried)
+		end
+	end
+	atkDashDir = nil
+end
+
+--[[ Launched by CombatClient the instant it learns a swing resolved to Lunge or Aerial (the
+     server names the kind on the same "Swing" event that already triggers the animation --
+     see OnMeleeEvent). Launches in the direction you are FACING, matching how the flat push
+     it replaces always worked; a manual Q-dash is the one that reads WASD for its direction.
+
+     Guarded against a real dash or slide already owning the character: those are full
+     commitments the player chose, and an attack-triggered push should not fight either. ]]
+local function startAttackDash()
+	if not hum or not hrp or isDashing or isSliding then return end
+	local dir = Model.flatUnit(hrp.CFrame.LookVector)
+	if not dir then return end
+	local v = vc()
+	if not v then return end
+
+	local speed = DASHCFG.MaxSpeed or 68.75
+	atkDashActive = true
+	atkDashVec = dir * speed
+	atkDashDir = dir
+	atkDashAimPrev = dir -- seeded at launch so the first frame steers by zero, not a snap
+	atkDashStartedAt = os.clock()
+	atkDashLaunchSpeed = speed
+
+	v.push({
+		id = "atkDash", planar = atkDashVec, duration = DASHCFG.Duration or 0.275,
+		decay = "none", suppressInput = true,
+	})
+
+	task.delay(DASHCFG.Duration or 0.275, function() endAttackDash(true) end)
+end
+
+-- Same steer-by-delta and decel-by-elapsed-time shape as updateDash, operating on the
+-- atkDash* variables and the "atkDash" contribution id instead. See updateDash's own
+-- comment for why both are done by hand rather than through the velocity stack's decay.
+local function updateAttackDash(dt)
+	if not atkDashActive then return end
+	local v = vc()
+	if not v or not hrp then return end
+	local dir = Model.flatUnit(atkDashVec)
+	local aimNow = Model.flatUnit(hrp.CFrame.LookVector)
+	if dir and aimNow then
+		if atkDashAimPrev then
+			local turned = Model.angleBetweenDeg(atkDashAimPrev, aimNow)
+			if turned > 0.01 then
+				local maxStep = (DASHCFG.SteerRateDeg or 1100) * dt
+				local step = math.min(turned, maxStep)
+				local sign = (atkDashAimPrev:Cross(aimNow).Y >= 0) and 1 or -1
+				local steered = Model.flatUnit(
+					CFrame.fromAxisAngle(Vector3.yAxis, math.rad(step) * sign) * dir)
+				if steered then
+					atkDashVec = steered * atkDashVec.Magnitude
+					atkDashDir = steered
+				end
+			end
+		end
+		atkDashAimPrev = aimNow
+	end
+
+	local endMult = DASHCFG.EndSpeedMult or 1
+	if endMult ~= 1 and atkDashLaunchSpeed > 0 then
+		local dur = DASHCFG.Duration or 0.275
+		local t = math.clamp((os.clock() - atkDashStartedAt) / math.max(dur, 0.001), 0, 1)
+		local mag = atkDashLaunchSpeed * (1 + (endMult - 1) * t)
+		local d = Model.flatUnit(atkDashVec)
+		if d then atkDashVec = d * mag end
+	end
+
+	v.update("atkDash", atkDashVec)
+end
+
 local function endDash(myToken, inheritPower)
 	if myToken ~= dashToken then return end -- a newer dash already took over
 	isDashing = false
@@ -932,6 +1047,12 @@ RunService:BindToRenderStep("MovementClientStep", Enum.RenderPriority.Character.
 
 	local grounded = hum.FloorMaterial ~= Enum.Material.Air
 
+	-- Re-aim/decel any live attack-dash EVERY frame, regardless of what else is happening.
+	-- Deliberately outside the state chain below: unlike a real dash it must not hijack
+	-- MoveState or early-return, since the combat system's own "Attacking" state and swing
+	-- animation need to keep running underneath it.
+	if atkDashActive then updateAttackDash(dt) end
+
 	-- ── STATE CHAIN ─────────────────────────────────────────────────────────
 	--   1. dash   -- the "dash" contribution drives, the momentum model suspended
 	--   2. slide  -- the "slide" contribution drives (re-steered by updateSlide)
@@ -1016,6 +1137,8 @@ local function acquire(char)
 	dashCooldownUntil = 0
 	dashLaunchSpeed, dashDir = 0, nil
 	dashVec, dashAimPrev, dashStartedAt = Vector3.zero, nil, 0
+	atkDashActive = false
+	atkDashVec, atkDashDir, atkDashAimPrev, atkDashStartedAt, atkDashLaunchSpeed = Vector3.zero, nil, nil, 0, 0
 	isSliding = false
 	slideVec = Vector3.zero
 	slideAirTime = 0
@@ -1035,11 +1158,18 @@ local function acquire(char)
 		dashToken += 1
 		isDashing = false
 		isSliding = false
+		atkDashActive = false
 	end)
 end
 
 if player.Character then acquire(player.Character) end
 player.CharacterAdded:Connect(acquire)
+
+-- CombatClient calls this the instant a swing resolves to Lunge or Aerial. Same publishing
+-- pattern as _G.VelocityClient/_G.CameraController -- a plain global rather than a remote,
+-- since both scripts run on the same client and the trigger needs to land the same frame
+-- the swing animation starts.
+_G.MovementClient = { attackDash = startAttackDash }
 
 print(string.format(
 	"[MovementClient] Loaded -- WxW sprint / Q dash (%.1f-%.1f studs) / Ctrl or C slide-or-crouch, WalkSpeed untouched",

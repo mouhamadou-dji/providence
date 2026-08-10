@@ -245,10 +245,15 @@ test("T13_ConfigIsCoherent", function()
 		assert(idx and MCFG.Anims[idx],
 			("%s.AnimIndex %s has no clip in Anims"):format(kind, tostring(idx)))
 	end
-	-- The lunge push lasts the windup, so it must not outlive the swing it belongs to.
-	assert(MCFG.Lunge.ForwardForce > 0, "a lunge must actually carry you forward")
-	-- The aerial carries you forward too since 2026-08-09 pt2.
-	assert(MCFG.Aerial.ForwardForce > 0, "an aerial must carry you forward as well")
+	-- ForwardForce is GONE (2026-08-10): Lunge and Aerial launch a full attackDash off
+	-- Config.Movement.Dash's own numbers instead of a per-attack flat push. Assert the old
+	-- keys stay absent (same insurance as the grab check below) and that the shared numbers
+	-- they now depend on are sane.
+	assert(MCFG.Lunge.ForwardForce == nil and MCFG.Aerial.ForwardForce == nil,
+		"ForwardForce was removed 2026-08-10 -- Lunge/Aerial now launch an attackDash instead")
+	local dash = Config.Movement.Dash
+	assert(dash.MaxSpeed > 0, "the attack dash needs a real launch speed")
+	assert(dash.Duration > 0, "the attack dash needs a real duration")
 	-- The grab (catch + drag an airborne victim before the slam) was built and pulled the
 	-- same session -- dev's call: "doing too much." Assert it stays gone rather than
 	-- reappearing silently if Config is ever merged from an older branch.

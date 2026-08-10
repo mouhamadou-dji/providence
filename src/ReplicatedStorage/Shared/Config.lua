@@ -263,20 +263,22 @@ Config.Melee = {
 	-- Sprinting + attack. A committed forward lunge: the push goes through the velocity
 	-- stack as a contribution rather than a raw AssemblyLinearVelocity write, so it sums
 	-- with knockback instead of fighting it.
-	-- ForwardForce doubled 25 -> 50 (2026-08-09 pt2).
+	-- ForwardForce (the flat, decay-to-zero push) is GONE 2026-08-10 -- the forward motion is
+	-- now a full MovementClient.attackDash launched off Config.Movement.Dash's own numbers.
+	-- See "ATTACK DASH FLOW" in that block for why.
 	Lunge = {
-		Damage = 12, Knockback = 30, ForwardForce = 50,
+		Damage = 12, Knockback = 30,
 		Cooldown = 0.8, AnimIndex = 4,
 	},
 
-	-- Airborne + attack. Slams the victim down (DownForce is applied as NEGATIVE vertical),
-	-- and since 2026-08-09 pt2 it carries you forward exactly like the lunge does.
+	-- Airborne + attack. Slams the victim down (DownForce is applied as NEGATIVE vertical)
+	-- and, since 2026-08-10, launches the same attackDash as Lunge.
 	--
 	-- The AERIAL GRAB (catching and dragging an airborne victim in front of you before the
 	-- slam) was built and then pulled the same session, 2026-08-09 pt3 -- dev's call: "doing
 	-- too much." The attack itself is unchanged; only the grab-and-drag half is gone.
 	Aerial = {
-		Damage = 12, Knockback = 25, DownForce = 20, ForwardForce = 50, AnimIndex = 4,
+		Damage = 12, Knockback = 25, DownForce = 20, AnimIndex = 4,
 	},
 
 	-- Release crouch, then attack within Window. Launches the victim upward.
@@ -498,8 +500,12 @@ Config.Movement = {
 		-- dash, ~24 studs, standing still or flat out. MomentumCurve is therefore inert --
 		-- left in place because both MovementClient and MovementSystem compute the same curve
 		-- from these keys, and pulling it would mean editing that duplicated maths twice.
-		MinSpeed      = 55,   -- == MaxSpeed: dash distance no longer scales with momentum
-		MaxSpeed      = 55,
+		-- +25% (55 -> 68.75) 2026-08-10. Lunge and Aerial attacks now launch off THIS same
+		-- value too (see the "ATTACK DASH FLOW" note below Duration), so raising it makes
+		-- every dash-shaped movement in the game -- the real dash, a sprint-attack lunge, a
+		-- jump-attack aerial -- stronger together.
+		MinSpeed      = 68.75, -- == MaxSpeed: dash distance no longer scales with momentum
+		MaxSpeed      = 68.75,
 		MomentumCurve = 1.5,  -- inert while MinSpeed == MaxSpeed
 		-- STEERABLE DASH (2026-08-10), the same delta-turn flow the slide uses: the dash keeps
 		-- the heading it launched with and rotates by exactly however much you turn the aim
@@ -535,6 +541,20 @@ Config.Movement = {
 		-- dash covered 12.1. The server's displacement guard budgets speed * Duration * 1.5
 		-- = ~22.7 studs, so it stays comfortably inside either way.
 		EndSpeedMult  = 0.50,
+
+		-- ATTACK DASH FLOW (2026-08-10, dev: "aerial and lunge is as if you did another dash
+		-- + attack"). Lunge and Aerial no longer have their own ForwardForce/decay-to-zero
+		-- push -- they launch a MovementClient.attackDash using THESE SAME numbers (MinSpeed/
+		-- MaxSpeed, Duration, EndSpeedMult, SteerRateDeg): same launch speed, same
+		-- steerable-and-decelerating flow as a real Q-dash, just triggered by the swing
+		-- instead of the dash key. One set of numbers, so buffing the dash buffs both
+		-- automatically and they can never drift apart.
+		--
+		-- Reusing this block instead of decay="linear" on a server-fired VelocityPush is not
+		-- a style choice -- decay="linear" always decays to ZERO, and the whole point here is
+		-- decaying to EndSpeedMult, which only a per-frame client-side loop can do (the same
+		-- reason the real dash's own decel is hand-rolled in MovementClient.updateDash rather
+		-- than using decay="linear").
 		-- A FLAT 1.0s (2026-08-10, dev: "just make it stay 1s, no more half dashes"). This is
 		-- the same 1.0s it effectively took to get a full-power dash under the old rusty
 		-- window -- the difference is that the intervening window no longer hands you a
